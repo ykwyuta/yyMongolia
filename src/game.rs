@@ -3827,7 +3827,7 @@ impl Game {
 
     fn render_commands(&mut self, x: f32, y: f32) {
         let pl = self.world.player;
-        let era = self.world.era;
+        let _era = self.world.era;
         let (bw, bh, gap) = (122.0, 46.0, 4.0);
         let pos = |i: usize| -> (f32, f32, f32, f32) {
             let c = (i % 3) as f32;
