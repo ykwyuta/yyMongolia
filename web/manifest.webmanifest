@@ -1,0 +1,15 @@
+{
+  "name": "モンゴル帝国 — ユーラシア統一への道",
+  "short_name": "モンゴル帝国",
+  "description": "モンゴル帝国期のユーラシアを舞台にしたリアルタイムストラテジー",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#120f0c",
+  "theme_color": "#120f0c",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
