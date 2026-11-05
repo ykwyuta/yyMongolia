@@ -186,3 +186,16 @@ pub fn import_file() {
         js::js_import()
     }
 }
+
+/// ファイルから読み込んだ記録（デスクトップ版のつなぎ目と揃える。ブラウザ版では lib.rs が直接渡す）
+pub fn take_loaded() -> Option<Vec<u8>> {
+    None
+}
+
+/// 保存・読み込みの結果の知らせ（ブラウザ版では lib.rs が直接渡す）
+pub fn take_notes() -> Vec<String> {
+    Vec::new()
+}
+
+/// 操作の足跡（デスクトップ版の異常終了ログ用。ブラウザ版では記録しない）
+pub fn crumb(_s: String) {}

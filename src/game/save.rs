@@ -183,6 +183,29 @@ impl Game {
     }
 
     /// ブラウザ側からの読み込み結果
+    /// 異常終了のログに書く、いまの状態（デスクトップ版）
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn state_text(&self) -> String {
+        let w = &self.world;
+        let n = &w.nations[w.player];
+        let units = w.units.iter().filter(|u| u.alive).count();
+        let blds = w.blds.iter().filter(|b| b.alive).count();
+        let screen = if self.screen == Screen::Playing { "対局" } else { "題字" };
+        format!(
+            "画面={} 種={} 年={} 自国={} 民={} 兵={} 城邑={} 速度={} 停止={} 英霊={} 降臨={} チュートリアル={} 決着={} 選択={} 全ユニット={} 全建物={} 言語={} 窓={}x{}",
+            screen, self.seed, w.year_ad(), n.name, n.workers, n.soldiers, n.cities, self.speed, self.paused, w.heroic, w.descent.is_some(), self.tut.is_some(), w.game_over.is_some(), self.sel.len(), units, blds, crate::lang::lang().code(), self.gfx.width, self.gfx.height
+        )
+    }
+
+    /// パニックした対局の記録（記録できない場面なら None。記録の処理まで失敗しても構わないようにする）
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn crash_bytes(&self) -> Option<Vec<u8>> {
+        if self.can_save().is_err() {
+            return None;
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.save_bytes())).ok()
+    }
+
     pub fn apply_loaded(&mut self, data: &[u8]) {
         match self.load_bytes(data) {
             Ok(()) => {

@@ -1,11 +1,11 @@
 # モンゴル帝国 — ユーラシア統一への道（YYMongolia）
 
-Rust で作った Age of Empires 風のリアルタイムストラテジーの**ブラウザ版**です。
-[YYEmpire（春秋戦国）](https://github.com/ykwyuta/yyempire) と同じゲームエンジン（シミュレーション・AI・UI・描画層）を土台に、
+Rust で作った Age of Empires 風のリアルタイムストラテジーです。**ブラウザ版**と **Windows 版**を、同じリポジトリの同じゲーム本体から作ります。
+[YYEmpire（春秋戦国）](https://github.com/ykwyuta/yyempire)・[YYEmpire Windows 版](https://github.com/ykwyuta/yyempire-win) と同じゲームエンジン（シミュレーション・AI・UI・描画層）を土台に、
 舞台を 1115〜1294 年のユーラシア大陸に移し、モンゴル帝国の時代の国々・兵種・英霊・史実の出来事を作り直しました。
-WebAssembly にコンパイルし、WebGL2 と Canvas2D で描画します。外部クレートは使っていません。
 
-静的サイトとして Cloudflare（Workers の静的アセット／Pages）で公開できます。
+- **ブラウザ版**：WebAssembly にコンパイルし、WebGL2 と Canvas2D で描画する。外部クレートは使わない。静的サイトとして Cloudflare（Workers の静的アセット／Pages）で公開できる。
+- **Windows 版**：Direct3D11 / Direct2D / DirectWrite で描画する。UI フレームワークやゲームエンジンは使わず、`windows` クレート（Win32 API バインディング）だけで描画・入力を作る。
 
 **ドキュメント**：紹介とユーザーガイド（[日本語](docs/ja/introduction.md)・[English](docs/en/introduction.md)・[中文](docs/zh/introduction.md)）。
 
@@ -21,6 +21,21 @@ cd dist && python3 -m http.server 8000
 ```
 
 ブラウザで http://localhost:8000/ を開く。
+
+### Windows 版
+
+Windows で：
+
+```
+cargo run --release --bin yymongolia-win
+```
+
+`target/release/yymongolia-win.exe` ができる（アイコン入り）。GitHub Actions の `windows` ジョブも exe を成果物（yymongolia-windows）として保存する。
+
+- 表示言語は `%APPDATA%\yymongolia\settings.txt` に保存する（初回は Windows の表示言語に合わせる）。
+- 記録は `%APPDATA%\yymongolia\saves\slot{N}.yymsav`。「書き出す」「ファイルから読み込む」はファイルダイアログを使う。ブラウザ版と同じ形式なので、互いに持ち運べる。
+- 異常終了したときは `%APPDATA%\yymongolia\logs` に調査ログ（パニック・例外・応答なし・メモリの推移）を残し、対局中ならその時点の記録も残す。
+- 文字が小さいときは Ctrl＋＋／Ctrl＋−、F11 で全画面。画面の解像度に合わせて UI は自動で拡大される。
 
 ### Cloudflare への公開
 
@@ -66,9 +81,15 @@ F5（または画面右上の「記録 F5」）で記録画面を開く。3枠�
 | `src/world/trade.rs` | 交易：商人・遠方の商人・部族（略奪・交易・傭兵） |
 | `src/i18n.rs` | データの英語・中国語訳（`tools/gendata.py` が生成） |
 | `src/ai.rs` | コンピュータ国家の思考（港と船による渡海作戦を含む） |
-| `src/game.rs` ほか `src/game/*` | 画面、入力、HUD、外交・ヘルプ・史記・交易・英霊・記録・チュートリアル |
-| `src/art.rs`・`src/gfx.rs` | 描画（船と港は手続き的に描く） |
-| `web/` | ブラウザ側（WebGL2 / Canvas2D、入力） |
+| `src/game.rs` ほか `src/game/*` | 画面、入力、HUD、外交・ヘルプ・史記・交易・英霊・記録・チュートリアル（両方の版で共通） |
+| `src/art.rs` | アイコン・肖像・船と港の絵（手続き的に描く） |
+| `src/lib.rs` | ゲーム本体と、版ごとの描画・入力のつなぎ目の切り替え（Windows なら `src/win/*`、それ以外はブラウザ版） |
+| `src/web.rs`・`src/gfx.rs`・`src/platform.rs`・`web/` | ブラウザ版：WebGL2 / Canvas2D の描画、IndexedDB の記録、入力 |
+| `src/main.rs`・`src/win/app.rs` | Windows 版：実行ファイルの入口と Win32 のメッセージループ |
+| `src/win/gfx.rs` | Windows 版：Direct3D11（地形テクスチャ・図形）と Direct2D/DirectWrite（文字・UI） |
+| `src/win/platform.rs` | Windows 版：記録・設定の置き場所（%APPDATA%）とファイルダイアログ |
+| `src/win/crashlog.rs` | Windows 版：異常終了の調査ログ |
+| `build.rs` | Windows（MSVC）版の exe にアイコンを埋め込む |
 
 ## データの作り直し
 
@@ -87,4 +108,4 @@ SIM_YEARS=60 cargo test --release long_sim -- --nocapture  # 全国 AI で60年�
 ## 出典
 
 地図の海岸線・湖・河川は [Natural Earth](https://www.naturalearthdata.com/)（パブリックドメイン）の 1:50m データを簡略化したもの。
-ゲームエンジン・ユニットや建物の画像は [YYEmpire](https://github.com/ykwyuta/yyempire) のもの。
+ゲームエンジン・ユニットや建物の画像は [YYEmpire](https://github.com/ykwyuta/yyempire)・[YYEmpire Windows 版](https://github.com/ykwyuta/yyempire-win) のもの。

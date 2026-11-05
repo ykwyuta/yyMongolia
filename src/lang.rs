@@ -110,6 +110,7 @@ pub fn has(ja: &str) -> bool {
 }
 
 /// 窓の題名
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn window_title() -> &'static str {
     t!("モンゴル帝国 — ユーラシア統一への道", "Mongol Empire — The Road to a World Empire", "蒙古帝国 — 欧亚一统之路")
 }

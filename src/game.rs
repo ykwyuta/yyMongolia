@@ -740,6 +740,13 @@ impl Game {
     // ------------------------------------------------------------ フレーム
     /// true を返すと終了
     pub fn frame(&mut self, evs: &[Ev], dt: f32, focused: bool) -> bool {
+        // ファイルから読み込んだ記録・保存の結果（デスクトップ版）
+        if let Some(data) = crate::platform::take_loaded() {
+            self.apply_loaded(&data);
+        }
+        for n in crate::platform::take_notes() {
+            self.notify(&n);
+        }
         self.clock += dt;
         // OS からのマウス座標（実ピクセル）を UI 座標系へ
         let ui = self.gfx.ui;
@@ -1881,6 +1888,7 @@ impl Game {
     }
 
     fn do_act(&mut self, a: Act) {
+        crate::platform::crumb(format!("操作 {:?} 選択{}", a, self.sel.len()));
         // 部隊への指示（移動・攻撃以外）でも時間を再開する
         if matches!(a, Act::Upgrade | Act::Convert | Act::Stop | Act::WorkersAuto | Act::ArmyDefend | Act::Demolish) {
             self.cmd_pause = false;

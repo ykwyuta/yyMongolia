@@ -21,3 +21,7 @@
 - **テングリの降臨**：1294年までに統一できなければ、永遠の蒼き天がモンゴルに降臨する。
 
 操作はゲーム内のヘルプ（F1）とチュートリアル（モンゴルで開始）を参照。
+
+## Windows 版
+
+同じゲームを Windows のアプリとしても遊べます（Direct3D11 / Direct2D で描画）。`cargo run --release --bin yymongolia-win` で起動するか、GitHub Actions の成果物 `yymongolia-windows` の `yymongolia-win.exe` を実行します。記録は `%APPDATA%\yymongolia\saves` に保存され、ブラウザ版と同じ形式なので書き出して持ち運べます。

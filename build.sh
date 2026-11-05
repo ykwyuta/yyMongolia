@@ -15,7 +15,8 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
-cargo build --release --target wasm32-unknown-unknown
+# ブラウザ版はゲーム本体（lib）だけを、デバッグ情報なしで作る（Windows 版の設定とは別）
+cargo build --release --lib --target wasm32-unknown-unknown --config profile.release.debug=false
 
 rm -rf dist
 mkdir -p dist

@@ -18,3 +18,7 @@ A real-time strategy game set in Eurasia from 1115 to 1294. Choose one of 34 sta
 - **Descent of Tengri**: if Eurasia is not united by 1294, the Eternal Blue Sky descends upon the Mongols.
 
 See the in-game Help (F1) and the Tutorial (as the Mongols).
+
+## Windows version
+
+The same game also runs as a Windows app (Direct3D11 / Direct2D). Start it with `cargo run --release --bin yymongolia-win`, or run `yymongolia-win.exe` from the `yymongolia-windows` GitHub Actions artifact. Saves are kept in `%APPDATA%\yymongolia\saves` and use the same format as the web version, so exported files move between them.

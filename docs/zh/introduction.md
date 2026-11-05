@@ -18,3 +18,7 @@
 - **腾格里降临**：若1294年前未能统一，长生天将降临于蒙古。
 
 操作请参阅游戏内帮助（F1）与教程（以蒙古开始）。
+
+## Windows 版
+
+同一款游戏也可作为 Windows 应用运行（以 Direct3D11 / Direct2D 绘制）。用 `cargo run --release --bin yymongolia-win` 启动，或运行 GitHub Actions 产物 `yymongolia-windows` 中的 `yymongolia-win.exe`。存档保存在 `%APPDATA%\yymongolia\saves`，与网页版格式相同，导出后可互相使用。
