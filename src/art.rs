@@ -1,5 +1,7 @@
-//! Age of Empires 風のUI背景テクスチャ・各種アイコン・肖像画の生成と描画
+//! 蒼天と織物を基調とするUI、モンゴル帝国期の文化別アセット。
 
+mod historical;
+use historical::PeriodArt;
 use crate::gfx::Gfx;
 use crate::rng::{fbm, hash2};
 use crate::world::{BKind, Era, UnitKind};
@@ -69,52 +71,8 @@ const RAW_PROP_SPRITES: [&[u8]; 3] = [
     include_bytes!("../assets/map/mine.bgra"),
 ];
 
-const HERO_SPRITE_SZ: usize = 128;
-const RAW_HERO_SPRITES: [&[u8]; 31] = [
-    include_bytes!("../assets/heroes/hero_00.bgra"),
-    include_bytes!("../assets/heroes/hero_01.bgra"),
-    include_bytes!("../assets/heroes/hero_02.bgra"),
-    include_bytes!("../assets/heroes/hero_03.bgra"),
-    include_bytes!("../assets/heroes/hero_04.bgra"),
-    include_bytes!("../assets/heroes/hero_05.bgra"),
-    include_bytes!("../assets/heroes/hero_06.bgra"),
-    include_bytes!("../assets/heroes/hero_07.bgra"),
-    include_bytes!("../assets/heroes/hero_08.bgra"),
-    include_bytes!("../assets/heroes/hero_09.bgra"),
-    include_bytes!("../assets/heroes/hero_10.bgra"),
-    include_bytes!("../assets/heroes/hero_11.bgra"),
-    include_bytes!("../assets/heroes/hero_12.bgra"),
-    include_bytes!("../assets/heroes/hero_13.bgra"),
-    include_bytes!("../assets/heroes/hero_14.bgra"),
-    include_bytes!("../assets/heroes/hero_15.bgra"),
-    include_bytes!("../assets/heroes/hero_16.bgra"),
-    include_bytes!("../assets/heroes/hero_17.bgra"),
-    include_bytes!("../assets/heroes/hero_18.bgra"),
-    include_bytes!("../assets/heroes/hero_19.bgra"),
-    include_bytes!("../assets/heroes/hero_20.bgra"),
-    include_bytes!("../assets/heroes/hero_21.bgra"),
-    include_bytes!("../assets/heroes/hero_22.bgra"),
-    include_bytes!("../assets/heroes/hero_23.bgra"),
-    include_bytes!("../assets/heroes/hero_24.bgra"),
-    include_bytes!("../assets/heroes/hero_25.bgra"),
-    include_bytes!("../assets/heroes/hero_26.bgra"),
-    include_bytes!("../assets/heroes/hero_27.bgra"),
-    include_bytes!("../assets/heroes/hero_28.bgra"),
-    include_bytes!("../assets/heroes/hero_29.bgra"),
-    include_bytes!("../assets/heroes/hero_30.bgra"),
-];
-
-const RAW_DIVINE_UNIT_SPRITES: [&[u8]; 2] = [
-    include_bytes!("../assets/divine/divine_infantry.bgra"),
-    include_bytes!("../assets/divine/divine_chariot.bgra"),
-];
-
-const RAW_DIVINE_BLD_SPRITES: [&[u8]; 2] = [
-    include_bytes!("../assets/divine/divine_capital.bgra"),
-    include_bytes!("../assets/divine/divine_town.bgra"),
-];
-
 pub struct Art {
+    period: PeriodArt,
     gen: u32,
     pub hud_stone: Option<ID2D1Bitmap>,
     pub panel_wood: Option<ID2D1Bitmap>,
@@ -126,20 +84,10 @@ pub struct Art {
     pub btn_dis: Option<ID2D1Bitmap>,
     pub res_icons: [Option<ID2D1Bitmap>; 7],
     pub cmd_icons: [Option<ID2D1Bitmap>; 24],
-    pub unit_sprites: [Option<ID2D1Bitmap>; 6],
-    pub unit_sprites_flip: [Option<ID2D1Bitmap>; 6],
-    pub bld_sprites: [Option<ID2D1Bitmap>; 6],
-    pub bld_sprites_fog: [Option<ID2D1Bitmap>; 6],
     pub prop_sprites: [Option<ID2D1Bitmap>; 3],
     pub prop_sprites_flip: [Option<ID2D1Bitmap>; 3],
     pub prop_sprites_fog: [Option<ID2D1Bitmap>; 3],
     pub prop_sprites_fog_flip: [Option<ID2D1Bitmap>; 3],
-    pub hero_sprites: [Option<ID2D1Bitmap>; 31],
-    pub hero_sprites_flip: [Option<ID2D1Bitmap>; 31],
-    pub divine_unit_sprites: [Option<ID2D1Bitmap>; 2],
-    pub divine_unit_sprites_flip: [Option<ID2D1Bitmap>; 2],
-    pub divine_bld_sprites: [Option<ID2D1Bitmap>; 2],
-    pub divine_bld_sprites_fog: [Option<ID2D1Bitmap>; 2],
 }
 
 struct Canvas {
@@ -433,9 +381,6 @@ fn load_raw_sprite_bgra(raw: &[u8], sz: usize, flip_x: bool, mul: f32) -> Vec<u3
     out
 }
 
-fn load_unit_sprite_bgra(idx: usize, flip_x: bool) -> Vec<u32> {
-    load_raw_sprite_bgra(RAW_UNIT_SPRITES[idx.min(4)], UNIT_SPRITE_SZ, flip_x, 1.0)
-}
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -445,76 +390,21 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
 }
 
-/// Age of Empires 風の石彫・青銅器レリーフ背景テクスチャ
+/// Midnight felt and blue textile, inspired by the steppe night sky.
 fn gen_hud_stone(w: usize, h: usize) -> Vec<u32> {
-    let mut cv = Canvas::new(w, h);
-    for y in 0..h {
-        let fy = y as f32 / h as f32;
-        for x in 0..w {
-            let fx = x as f32 / w as f32;
-            let n1 = fbm(x as f32 * 0.06, y as f32 * 0.06, 101, 4);
-            let n2 = fbm(x as f32 * 0.18, y as f32 * 0.18, 202, 3);
-            let grain = (n1 - 0.5) * 0.09 + (n2 - 0.5) * 0.05;
-            // 石材の目地
-            let bx = (x + (y / 32) * 48) % 96;
-            let by = y % 32;
-            let seam = if bx == 0 || by == 0 {
-                -0.045
-            } else if bx == 1 || by == 1 {
-                0.03
-            } else {
-                0.0
-            };
-            let vig = 1.0 - ((fx - 0.5).powi(2) * 0.25 + (fy - 0.5).powi(2) * 0.45);
-            let mut base = [0.13 + grain + seam, 0.105 + grain * 0.85 + seam, 0.08 + grain * 0.7 + seam];
-            // 上部と下部の青銅色の縁取りグラデーション
-            if y < 10 {
-                let t = 1.0 - y as f32 / 10.0;
-                base = lerp3(base, [0.32, 0.25, 0.14], t * 0.65);
-            }
-            // 雷紋（古代中国の幾何学文様）の透かし彫り
-            if (4..16).contains(&y) {
-                let rx = x % 16;
-                let ry = y - 4;
-                let pat = (ry == 0 || ry == 11 || rx == 0 || rx == 15)
-                    || ((2..=9).contains(&ry) && (rx == 2 || rx == 13))
-                    || ((ry == 2 || ry == 9) && (2..=13).contains(&rx))
-                    || ((4..=7).contains(&ry) && (rx == 4 || rx == 11));
-                if pat {
-                    base = [base[0] + 0.055, base[1] + 0.042, base[2] + 0.02];
-                }
-            }
-            cv.px[y * w + x] = [(base[0] * vig).clamp(0.0, 1.0), (base[1] * vig).clamp(0.0, 1.0), (base[2] * vig).clamp(0.0, 1.0), 0.97];
-        }
-    }
-    cv.to_bgra_premul()
+    textile(w, h, [0.045, 0.105, 0.15], 101)
 }
-
-/// 竹簡・黒漆木目調の内部パネル背景テクスチャ
 fn gen_panel_wood(w: usize, h: usize) -> Vec<u32> {
+    textile(w, h, [0.035, 0.065, 0.09], 303)
+}
+fn textile(w: usize, h: usize, base: [f32; 3], seed: u32) -> Vec<u32> {
     let mut cv = Canvas::new(w, h);
-    for y in 0..h {
-        let fy = y as f32 / h as f32;
-        for x in 0..w {
-            let fx = x as f32 / w as f32;
-            let wood = fbm(x as f32 * 0.03, y as f32 * 0.22, 303, 4);
-            let fine = fbm(x as f32 * 0.25, y as f32 * 0.05, 404, 2);
-            let strip = x % 24;
-            let groove = if strip == 0 {
-                -0.04
-            } else if strip == 1 {
-                0.025
-            } else {
-                0.0
-            };
-            let v = (wood - 0.5) * 0.08 + (fine - 0.5) * 0.03 + groove;
-            let vig = 1.0 - ((fx - 0.5).powi(2) + (fy - 0.5).powi(2)) * 0.35;
-            let r = (0.16 + v) * vig;
-            let g = (0.125 + v * 0.85) * vig;
-            let b = (0.09 + v * 0.65) * vig;
-            cv.px[y * w + x] = [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), 0.95];
-        }
-    }
+    for y in 0..h { for x in 0..w {
+        let grain = (fbm(x as f32 * 0.3, y as f32 * 0.3, seed, 2) - 0.5) * 0.018;
+        let weave = if (x + y) % 3 == 0 { 0.006 } else { 0.0 };
+        let v = grain + weave;
+        cv.px[y*w+x] = [base[0]+v, base[1]+v, base[2]+v, 0.985];
+    }}
     cv.to_bgra_premul()
 }
 
@@ -522,9 +412,9 @@ fn gen_panel_wood(w: usize, h: usize) -> Vec<u32> {
 fn gen_button_tex(w: usize, h: usize, state: u8) -> Vec<u32> {
     let mut cv = Canvas::new(w, h);
     let (top_c, bot_c, border_hi, border_lo) = match state {
-        1 => ([0.52, 0.41, 0.23], [0.30, 0.22, 0.12], [0.98, 0.86, 0.52], [0.45, 0.34, 0.18]), // hover
+        1 => ([0.12, 0.32, 0.39], [0.07, 0.21, 0.29], [0.73, 0.83, 0.78], [0.20, 0.43, 0.49]), // hover
         2 => ([0.20, 0.18, 0.16], [0.13, 0.12, 0.10], [0.35, 0.32, 0.28], [0.15, 0.13, 0.11]), // disabled
-        _ => ([0.36, 0.28, 0.17], [0.19, 0.14, 0.09], [0.82, 0.68, 0.38], [0.32, 0.24, 0.13]), // normal
+        _ => ([0.08, 0.19, 0.25], [0.045, 0.115, 0.16], [0.55, 0.63, 0.60], [0.10, 0.25, 0.31]), // normal
     };
     for y in 0..h {
         let ty = y as f32 / (h - 1).max(1) as f32;
@@ -547,85 +437,27 @@ fn gen_button_tex(w: usize, h: usize, state: u8) -> Vec<u32> {
             cv.px[y * w + x] = [c[0].clamp(0.0, 1.0), c[1].clamp(0.0, 1.0), c[2].clamp(0.0, 1.0), 0.96];
         }
     }
-    // 四隅のリベット飾り
-    let rc = if state == 2 { [0.45, 0.42, 0.38, 1.0] } else { [0.95, 0.82, 0.48, 1.0] };
-    for (cx, cy) in [(5.5, 5.5), (w as f32 - 5.5, 5.5), (5.5, h as f32 - 5.5), (w as f32 - 5.5, h as f32 - 5.5)] {
-        cv.circle(cx, cy, 1.8, rc);
-    }
     cv.to_bgra_premul()
 }
 
 /// タイトル画面用の春秋戦国・青銅鼎と戈の紋章バナー
 /// 題字の飾りの扁額の内寸（幅）。wide は英語の題字用
-pub const TITLE_PLAQUE_W: f32 = 180.0;
+pub const TITLE_PLAQUE_W: f32 = 292.0;
 pub const TITLE_PLAQUE_W_WIDE: f32 = 292.0;
 
-fn gen_title_crest(wide: bool) -> Vec<u32> {
-    let (w, h) = (340, 124);
-    let mut cv = Canvas::new(w, h);
-    let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.52);
-
-    // 背後の放射光グラデーション
-    for y in 0..h {
-        for x in 0..w {
-            let dx = (x as f32 - cx) / 162.0;
-            let dy = (y as f32 - cy) / 58.0;
-            let d = (dx * dx + dy * dy).sqrt();
-            if d < 1.0 {
-                let ang = (y as f32 - cy).atan2(x as f32 - cx);
-                let rays = 0.5 + 0.5 * (ang * 18.0).cos();
-                let a = (1.0 - d).powf(1.4) * (0.42 + 0.22 * rays);
-                let c = lerp3([0.92, 0.72, 0.28], [0.38, 0.14, 0.06], d);
-                cv.blend(x as i32, y as i32, [c[0], c[1], c[2], a]);
-            }
+fn gen_title_crest(_wide: bool) -> Vec<u32> {
+    let mut cv = Canvas::new(340, 124);
+    let gold = [0.79, 0.69, 0.46, 1.0];
+    // A spare horizon and two horsehair standards, rather than an ancient Chinese plaque.
+    cv.capsule(24.0, 106.0, 316.0, 106.0, 0.7, gold);
+    for x in [14.0, 326.0] {
+        cv.capsule(x, 22.0, x, 95.0, 1.2, gold);
+        cv.poly(&[(x, 14.0), (x-4.0, 25.0), (x+4.0, 25.0)], gold);
+        cv.capsule(x-8.0, 32.0, x+8.0, 32.0, 1.0, gold);
+        for dx in [-6.0, -3.0, 0.0, 3.0, 6.0] {
+            cv.capsule(x+dx, 34.0, x+dx, 57.0-dx.abs(), 1.2, [0.85, 0.86, 0.78, 0.9]);
         }
     }
-
-    let wood = [0.48, 0.26, 0.14, 1.0];
-    let gold = [0.95, 0.80, 0.38, 1.0];
-    let bronze = [0.78, 0.62, 0.32, 1.0];
-    let shine = [1.0, 0.94, 0.72, 1.0];
-
-    // 左右に交差する青銅の戈（か）と長柄
-    cv.capsule(cx - 148.0, cy + 40.0, cx + 142.0, cy - 42.0, 3.0, wood);
-    cv.capsule(cx + 148.0, cy + 40.0, cx - 142.0, cy - 42.0, 3.0, wood);
-    // 左上の戈刃
-    cv.poly(&[(cx - 142.0, cy - 42.0), (cx - 110.0, cy - 52.0), (cx - 118.0, cy - 38.0)], shine);
-    cv.poly(&[(cx - 134.0, cy - 39.0), (cx - 148.0, cy - 18.0), (cx - 122.0, cy - 30.0)], bronze);
-    // 右上の戈刃
-    cv.poly(&[(cx + 142.0, cy - 42.0), (cx + 110.0, cy - 52.0), (cx + 118.0, cy - 38.0)], shine);
-    cv.poly(&[(cx + 134.0, cy - 39.0), (cx + 148.0, cy - 18.0), (cx + 122.0, cy - 30.0)], bronze);
-
-    // 扁額の半幅（内側）。幅広のときは両脇の戦旗・鼎を扁額が覆うので描かない
-    let hw = if wide { TITLE_PLAQUE_W_WIDE * 0.5 } else { TITLE_PLAQUE_W * 0.5 };
-    if !wide {
-    // 左右の戦旗（朱塗りの軍旗＋金縁）
-    let crimson = [0.68, 0.12, 0.10, 0.95];
-    let crimson_hi = [0.85, 0.22, 0.16, 0.95];
-    cv.poly(&[(cx - 138.0, cy - 26.0), (cx - 82.0, cy - 16.0), (cx - 90.0, cy + 26.0), (cx - 146.0, cy + 16.0)], crimson);
-    cv.poly(&[(cx - 134.0, cy - 20.0), (cx - 88.0, cy - 12.0), (cx - 94.0, cy + 20.0), (cx - 140.0, cy + 11.0)], crimson_hi);
-    cv.poly(&[(cx + 138.0, cy - 26.0), (cx + 82.0, cy - 16.0), (cx + 90.0, cy + 26.0), (cx + 146.0, cy + 16.0)], crimson);
-    cv.poly(&[(cx + 134.0, cy - 20.0), (cx + 88.0, cy - 12.0), (cx + 94.0, cy + 20.0), (cx + 140.0, cy + 11.0)], crimson_hi);
-
-    // 左右の小型青銅鼎メダリオン
-    for &ox in &[cx - 114.0, cx + 114.0] {
-        cv.circle(ox, cy + 2.0, 14.0, [0.12, 0.09, 0.06, 0.92]);
-        cv.ring(ox, cy + 2.0, 13.5, 2.0, gold);
-        cv.round_rect(ox - 7.0, cy - 4.0, ox + 7.0, cy + 5.0, 3.0, gold);
-        cv.capsule(ox - 5.0, cy + 4.0, ox - 6.0, cy + 10.0, 1.5, bronze);
-        cv.capsule(ox, cy + 4.0, ox, cy + 10.0, 1.5, gold);
-        cv.capsule(ox + 5.0, cy + 4.0, ox + 6.0, cy + 10.0, 1.5, bronze);
-    }
-    }
-
-    // 中央の黒漆・金縁扁額（題字がくっきり映える台座）
-    cv.round_rect(cx - hw - 6.0, cy - 38.0, cx + hw + 6.0, cy + 42.0, 10.0, [0.07, 0.05, 0.04, 0.94]);
-    cv.round_rect(cx - hw - 3.0, cy - 35.0, cx + hw + 3.0, cy + 39.0, 8.0, [0.85, 0.70, 0.34, 0.95]);
-    cv.round_rect(cx - hw, cy - 32.0, cx + hw, cy + 36.0, 6.0, [0.14, 0.09, 0.07, 0.98]);
-    // 扁額上部の宝珠・龍紋クレスト
-    cv.circle(cx, cy - 36.0, 9.0, gold);
-    cv.circle(cx, cy - 36.0, 5.5, [0.28, 0.72, 0.56, 1.0]);
-
     cv.to_bgra_premul()
 }
 
@@ -746,13 +578,12 @@ fn gen_res_icon(kind: ResIcon) -> Vec<u32> {
             cv.circle(24.0, 28.0, 2.8, [1.0, 0.88, 0.40, 1.0]);
         }
         ResIcon::Era => {
-            // 竹簡（ちくかん）の巻物
-            for k in 0..5 {
-                let x = 13.0 + k as f32 * 5.2;
-                cv.round_rect(x, 12.0, x + 4.2, 36.0, 1.2, [0.86, 0.72, 0.44, 1.0]);
+            // 羊皮紙の年表と青い封蝋。
+            cv.round_rect(12.0, 11.0, 36.0, 37.0, 2.0, [0.88, 0.83, 0.68, 1.0]);
+            for y in [17.0, 22.0, 27.0] {
+                cv.capsule(17.0, y, 31.0, y, 0.7, [0.30, 0.37, 0.38, 1.0]);
             }
-            cv.capsule(11.0, 17.0, 37.0, 17.0, 1.4, [0.82, 0.20, 0.16, 1.0]);
-            cv.capsule(11.0, 31.0, 37.0, 31.0, 1.4, [0.82, 0.20, 0.16, 1.0]);
+            cv.circle(29.0, 33.0, 4.5, [0.18, 0.43, 0.56, 1.0]);
         }
     }
     cv.to_bgra_premul()
@@ -915,13 +746,14 @@ fn gen_cmd_icon(kind: CmdIcon) -> Vec<u32> {
         }
         CmdIcon::AllArmy => {
             icon_backdrop(&mut cv, [0.44, 0.16, 0.12], [0.18, 0.06, 0.06], [0.95, 0.45, 0.22]);
-            // 軍旗と交差する二振りの青銅戈・兜
-            cv.poly(&[(16.0, 10.0), (48.0, 16.0), (16.0, 28.0)], [0.88, 0.20, 0.16, 1.0]);
-            cv.capsule(14.0, 54.0, 50.0, 14.0, 2.6, [0.85, 0.68, 0.32, 1.0]);
-            cv.capsule(50.0, 54.0, 14.0, 14.0, 2.6, [0.85, 0.68, 0.32, 1.0]);
-            cv.circle(32.0, 38.0, 12.0, [0.92, 0.76, 0.36, 1.0]);
-            cv.poly(&[(20.0, 38.0), (44.0, 38.0), (46.0, 50.0), (18.0, 50.0)], [0.75, 0.58, 0.26, 1.0]);
-            cv.poly(&[(32.0, 16.0), (25.0, 28.0), (39.0, 28.0)], [0.95, 0.22, 0.16, 1.0]);
+            // 白い馬尾を掲げるスルデ。
+            let metal = [0.83, 0.76, 0.55, 1.0];
+            cv.capsule(32.0, 10.0, 32.0, 56.0, 1.8, metal);
+            cv.poly(&[(32.0, 5.0), (27.0, 15.0), (37.0, 15.0)], metal);
+            cv.capsule(17.0, 22.0, 47.0, 22.0, 1.5, metal);
+            for x in [19.0, 25.5, 32.0, 38.5, 45.0] {
+                cv.capsule(x, 25.0, x - 2.0, 44.0, 2.3, [0.90, 0.89, 0.81, 1.0]);
+            }
         }
     }
     icon_frame(&mut cv);
@@ -932,6 +764,7 @@ impl Art {
     pub fn new() -> Self {
         Self {
             gen: u32::MAX,
+            period: PeriodArt::default(),
             hud_stone: None,
             panel_wood: None,
             title_crest: None,
@@ -941,20 +774,10 @@ impl Art {
             btn_dis: None,
             res_icons: Default::default(),
             cmd_icons: Default::default(),
-            unit_sprites: Default::default(),
-            unit_sprites_flip: Default::default(),
-            bld_sprites: Default::default(),
-            bld_sprites_fog: Default::default(),
             prop_sprites: Default::default(),
             prop_sprites_flip: Default::default(),
             prop_sprites_fog: Default::default(),
             prop_sprites_fog_flip: Default::default(),
-            hero_sprites: Default::default(),
-            hero_sprites_flip: Default::default(),
-            divine_unit_sprites: Default::default(),
-            divine_unit_sprites_flip: Default::default(),
-            divine_bld_sprites: Default::default(),
-            divine_bld_sprites_fog: Default::default(),
         }
     }
 
@@ -963,6 +786,7 @@ impl Art {
             return;
         }
         self.gen = gfx.d2d_gen;
+        self.period.load(gfx);
         self.hud_stone = gfx.create_bitmap(256, 128, &gen_hud_stone(256, 128));
         self.panel_wood = gfx.create_bitmap(256, 128, &gen_panel_wood(256, 128));
         self.title_crest = gfx.create_bitmap(340, 124, &gen_title_crest(false));
@@ -1013,23 +837,6 @@ impl Art {
         for c in cmd_all {
             self.cmd_icons[c as usize] = gfx.create_bitmap(64, 64, &gen_cmd_icon(c));
         }
-        for b in 0..5 {
-            let sz = UNIT_SPRITE_SZ as u32;
-            self.unit_sprites[b] = gfx.create_bitmap(sz, sz, &load_unit_sprite_bgra(b, false));
-            self.unit_sprites_flip[b] = gfx.create_bitmap(sz, sz, &load_unit_sprite_bgra(b, true));
-        }
-        {
-            let sz = UNIT_SPRITE_SZ as u32;
-            self.unit_sprites[5] = gfx.create_bitmap(sz, sz, &gen_ship_sprite(false));
-            self.unit_sprites_flip[5] = gfx.create_bitmap(sz, sz, &gen_ship_sprite(true));
-        }
-        let bsz = BLD_SPRITE_SZ as u32;
-        for b in 0..5 {
-            self.bld_sprites[b] = gfx.create_bitmap(bsz, bsz, &load_raw_sprite_bgra(RAW_BLD_SPRITES[b], BLD_SPRITE_SZ, false, 1.0));
-            self.bld_sprites_fog[b] = gfx.create_bitmap(bsz, bsz, &load_raw_sprite_bgra(RAW_BLD_SPRITES[b], BLD_SPRITE_SZ, false, 0.52));
-        }
-        self.bld_sprites[5] = gfx.create_bitmap(bsz, bsz, &gen_port_sprite(1.0));
-        self.bld_sprites_fog[5] = gfx.create_bitmap(bsz, bsz, &gen_port_sprite(0.52));
         let psz = PROP_SPRITE_SZ as u32;
         for p in 0..3 {
             self.prop_sprites[p] = gfx.create_bitmap(psz, psz, &load_raw_sprite_bgra(RAW_PROP_SPRITES[p], PROP_SPRITE_SZ, false, 1.0));
@@ -1037,71 +844,13 @@ impl Art {
             self.prop_sprites_fog[p] = gfx.create_bitmap(psz, psz, &load_raw_sprite_bgra(RAW_PROP_SPRITES[p], PROP_SPRITE_SZ, false, 0.52));
             self.prop_sprites_fog_flip[p] = gfx.create_bitmap(psz, psz, &load_raw_sprite_bgra(RAW_PROP_SPRITES[p], PROP_SPRITE_SZ, true, 0.52));
         }
-        let hsz = HERO_SPRITE_SZ as u32;
-        for h in 0..31 {
-            self.hero_sprites[h] = gfx.create_bitmap(hsz, hsz, &load_raw_sprite_bgra(RAW_HERO_SPRITES[h], HERO_SPRITE_SZ, false, 1.0));
-            self.hero_sprites_flip[h] = gfx.create_bitmap(hsz, hsz, &load_raw_sprite_bgra(RAW_HERO_SPRITES[h], HERO_SPRITE_SZ, true, 1.0));
-        }
-        let usz = UNIT_SPRITE_SZ as u32;
-        for d in 0..2 {
-            self.divine_unit_sprites[d] = gfx.create_bitmap(usz, usz, &load_raw_sprite_bgra(RAW_DIVINE_UNIT_SPRITES[d], UNIT_SPRITE_SZ, false, 1.0));
-            self.divine_unit_sprites_flip[d] = gfx.create_bitmap(usz, usz, &load_raw_sprite_bgra(RAW_DIVINE_UNIT_SPRITES[d], UNIT_SPRITE_SZ, true, 1.0));
-        }
-        for d in 0..2 {
-            self.divine_bld_sprites[d] = gfx.create_bitmap(bsz, bsz, &load_raw_sprite_bgra(RAW_DIVINE_BLD_SPRITES[d], BLD_SPRITE_SZ, false, 1.0));
-            self.divine_bld_sprites_fog[d] = gfx.create_bitmap(bsz, bsz, &load_raw_sprite_bgra(RAW_DIVINE_BLD_SPRITES[d], BLD_SPRITE_SZ, false, 0.55));
-        }
     }
 
-    pub fn hero_sprite(&self, hero_idx: usize, flip_x: bool) -> Option<&ID2D1Bitmap> {
-        if hero_idx >= self.hero_sprites.len() {
-            return None;
-        }
-        if flip_x {
-            self.hero_sprites_flip[hero_idx].as_ref()
-        } else {
-            self.hero_sprites[hero_idx].as_ref()
-        }
+    pub fn divine_unit_sprite(&self, k: UnitKind, flip: bool) -> Option<&ID2D1Bitmap> {
+        self.period.get(120 + if k == UnitKind::Cavalry { 6 } else { 5 }, flip, false)
     }
-
-    pub fn divine_unit_sprite(&self, k: UnitKind, flip_x: bool) -> Option<&ID2D1Bitmap> {
-        let idx = match k {
-            UnitKind::Cavalry => 1,
-            _ => 0,
-        };
-        if flip_x {
-            self.divine_unit_sprites_flip[idx].as_ref()
-        } else {
-            self.divine_unit_sprites[idx].as_ref()
-        }
-    }
-
-    pub fn divine_bld_sprite(&self, k: BKind, fogged: bool) -> Option<&ID2D1Bitmap> {
-        let idx = match k {
-            BKind::Capital => 0,
-            _ => 1,
-        };
-        if fogged {
-            self.divine_bld_sprites_fog[idx].as_ref()
-        } else {
-            self.divine_bld_sprites[idx].as_ref()
-        }
-    }
-
-    pub fn bld_sprite(&self, k: BKind, fogged: bool) -> Option<&ID2D1Bitmap> {
-        let idx = match k {
-            BKind::Capital => 0,
-            BKind::Town => 1,
-            BKind::Barracks => 2,
-            BKind::Farm => 3,
-            BKind::Fort => 4,
-            BKind::Port => 5,
-        };
-        if fogged {
-            self.bld_sprites_fog[idx].as_ref()
-        } else {
-            self.bld_sprites[idx].as_ref()
-        }
+    pub fn divine_bld_sprite(&self, _k: BKind, fog: bool) -> Option<&ID2D1Bitmap> {
+        self.period.get(127, false, fog)
     }
 
     pub fn mountain_sprite(&self, flip_x: bool, fogged: bool) -> Option<&ID2D1Bitmap> {
@@ -1130,45 +879,7 @@ impl Art {
         }
     }
 
-    pub fn unit_sprite(&self, k: UnitKind, _era: Era, flip_x: bool) -> Option<&ID2D1Bitmap> {
-        let idx = match k {
-            UnitKind::Worker => 0,
-            UnitKind::Infantry => 1,
-            UnitKind::Archer => 2,
-            UnitKind::Cavalry => 4,
-            UnitKind::Ship => 5,
-        };
-        if flip_x {
-            self.unit_sprites_flip[idx].as_ref()
-        } else {
-            self.unit_sprites[idx].as_ref()
-        }
-    }
-
-    pub fn unit_icon(&self, k: UnitKind, _era: Era) -> Option<&ID2D1Bitmap> {
-        let idx = match k {
-            UnitKind::Worker => CmdIcon::Worker,
-            UnitKind::Infantry => CmdIcon::Infantry,
-            UnitKind::Archer => CmdIcon::Archer,
-            UnitKind::Cavalry => CmdIcon::Cavalry,
-            UnitKind::Ship => CmdIcon::Ship,
-        };
-        self.cmd_icons[idx as usize].as_ref()
-    }
-
-    pub fn bld_icon(&self, k: BKind) -> Option<&ID2D1Bitmap> {
-        let idx = match k {
-            BKind::Farm => CmdIcon::Farm,
-            BKind::Barracks => CmdIcon::Barracks,
-            BKind::Town => CmdIcon::Town,
-            BKind::Capital => CmdIcon::Capital,
-            BKind::Fort => CmdIcon::Fort,
-            BKind::Port => CmdIcon::Port,
-        };
-        self.cmd_icons[idx as usize].as_ref()
-    }
-
-    /// Age of Empires 風の石彫・金枠パネルを描画
+    /// 濃紺の織物と細い金属枠のパネルを描画
     pub fn draw_stone_panel(&self, gfx: &Gfx, x0: f32, y0: f32, x1: f32, y1: f32) {
         if let Some(bmp) = &self.hud_stone {
             // タイル状に敷き詰める
@@ -1183,11 +894,11 @@ impl Art {
             gfx.fill_rect(x0, y0, x1, y1, [0.11, 0.09, 0.07, 0.96]);
         }
         // 立体的な金・青銅の二重縁取り
-        gfx.stroke_rect(x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5, 2.0, [0.78, 0.64, 0.34, 0.95]);
-        gfx.stroke_rect(x0 + 3.0, y0 + 3.0, x1 - 3.0, y1 - 3.0, 1.0, [0.35, 0.26, 0.14, 0.9]);
+        gfx.stroke_rect(x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5, 2.0, [0.43, 0.57, 0.61, 0.95]);
+        gfx.stroke_rect(x0 + 3.0, y0 + 3.0, x1 - 3.0, y1 - 3.0, 1.0, [0.10, 0.23, 0.29, 0.9]);
     }
 
-    /// 内部のくぼんだ木目・竹簡ボックスを描画
+    /// 暗いフェルト地の情報ボックスを描画
     pub fn draw_inset_box(&self, gfx: &Gfx, x0: f32, y0: f32, x1: f32, y1: f32) {
         if let Some(bmp) = &self.panel_wood {
             gfx.draw_bitmap(bmp, x0, y0, x1, y1);
@@ -1196,12 +907,12 @@ impl Art {
         }
         // 彫り込みの影と金枠
         gfx.stroke_rect(x0, y0, x1, y1, 1.5, [0.05, 0.04, 0.03, 0.9]);
-        gfx.stroke_rect(x0 + 1.5, y0 + 1.5, x1 - 1.5, y1 - 1.5, 1.0, [0.62, 0.50, 0.26, 0.75]);
+        gfx.stroke_rect(x0 + 1.5, y0 + 1.5, x1 - 1.5, y1 - 1.5, 1.0, [0.30, 0.45, 0.49, 0.75]);
     }
 
-    /// 四隅に古代中国・青銅器風の角飾り（雷紋金具）を描画
+    /// 控えめな金属の隅飾りを描画
     pub fn draw_corner_ornaments(&self, gfx: &Gfx, x0: f32, y0: f32, x1: f32, y1: f32, s: f32) {
-        let gold = [0.92, 0.78, 0.38, 0.95];
+        let gold = [0.69, 0.66, 0.48, 0.75];
         let dark = [0.22, 0.16, 0.08, 0.95];
         for &(cx, cy, dx, dy) in &[
             (x0, y0, 1.0f32, 1.0f32),

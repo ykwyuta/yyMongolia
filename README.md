@@ -9,7 +9,7 @@ Rust で作った Age of Empires 風のリアルタイムストラテジーで�
 
 **ドキュメント**：紹介とユーザーガイド（[日本語](docs/ja/introduction.md)・[English](docs/en/introduction.md)・[中文](docs/zh/introduction.md)）。
 
-![プレイ画面](docs/images/play.jpg)
+![モンゴル帝国期の文化別アセット](assets/period/catalog.jpg)
 
 ## 遊ぶ・ビルドする
 
@@ -108,4 +108,8 @@ SIM_YEARS=60 cargo test --release long_sim -- --nocapture  # 全国 AI で60年�
 ## 出典
 
 地図の海岸線・湖・河川は [Natural Earth](https://www.naturalearthdata.com/)（パブリックドメイン）の 1:50m データを簡略化したもの。
-ゲームエンジン・ユニットや建物の画像は [YYEmpire](https://github.com/ykwyuta/yyempire)・[YYEmpire Windows 版](https://github.com/ykwyuta/yyempire-win) のもの。
+ゲームエンジンの土台は [YYEmpire](https://github.com/ykwyuta/yyempire)・[YYEmpire Windows 版](https://github.com/ykwyuta/yyempire-win) のもの。
+
+## アートとデザイン
+
+兵士・建築はモンゴル帝国期の10文化圏に合わせた生成画像に刷新。軍船・戦象・英霊も専用画像を使用し、UIは蒼天と濃紺の織物を基調とする。[制作方針・文化圏の対応・再変換手順](docs/art-direction.md)を参照。

@@ -14,6 +14,7 @@ const FAMILIES = [
   '"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Noto Sans JP", sans-serif',
 ];
 const LANG_CODES = ['ja', 'en', 'zh'];
+const DISPLAY_FAMILIES = ['"Yu Mincho", "Noto Serif JP", serif', 'Georgia, "Times New Roman", serif', '"Noto Serif SC", "SimSun", serif'];
 const TITLES = ['モンゴル帝国 — ユーラシア統一への道', 'Mongol Empire — The Road to a World Empire', '蒙古帝国 — 欧亚一统之路'];
 const LANG_KEY = 'yymongolia.lang';
 // 起動時の言語：URL の ?lang=、保存した設定、ブラウザの言語の順
@@ -60,7 +61,7 @@ let fontCss = [];
 function setLang(l) {
   curLang = l;
   FAMILY = FAMILIES[l];
-  fontCss = FONTS.map(([sz, , bold]) => `${bold ? '700' : '400'} ${sz}px ${FAMILY}`);
+  fontCss = FONTS.map(([sz, , bold], i) => `${bold ? '700' : '400'} ${sz}px ${i >= 5 ? DISPLAY_FAMILIES[l] : FAMILY}`);
   document.documentElement.lang = LANG_CODES[l];
   document.title = TITLES[l];
 }

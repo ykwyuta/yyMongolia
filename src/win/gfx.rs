@@ -155,8 +155,13 @@ fn make_fonts(dwrite: &IDWriteFactory) -> Result<Vec<IDWriteTextFormat>> {
     let mut fonts = Vec::new();
     for (size, center, bold) in specs {
         unsafe {
+            let display = match crate::lang::lang() {
+                crate::lang::Lang::Ja => w!("Yu Mincho"),
+                crate::lang::Lang::Zh => w!("SimSun"),
+                crate::lang::Lang::En => w!("Georgia"),
+            };
             let f = dwrite.CreateTextFormat(
-                family,
+                if size >= 30.0 { display } else { family },
                 None,
                 if bold { DWRITE_FONT_WEIGHT_BOLD } else { DWRITE_FONT_WEIGHT_NORMAL },
                 DWRITE_FONT_STYLE_NORMAL,

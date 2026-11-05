@@ -2564,6 +2564,7 @@ impl Game {
                 sy: f32,
                 r: f32,
                 kind: BKind,
+                origin: usize,
                 nc: [f32; 3],
                 done: bool,
                 progress: f32,
@@ -2575,7 +2576,8 @@ impl Game {
                 sx: f32,
                 sy: f32,
                 kind: UnitKind,
-                ue: Era,
+                nation: usize,
+                ut: u8,
                 pw: f32,
                 nc: [f32; 3],
                 carry: Option<usize>,
@@ -2700,6 +2702,7 @@ impl Game {
                         sy,
                         r,
                         kind: b.kind,
+                        origin: b.origin as usize,
                         nc,
                         done: b.done(),
                         progress: b.progress,
@@ -2735,7 +2738,8 @@ impl Game {
                             sx,
                             sy,
                             kind: u.kind,
-                            ue: if (u.tribe as usize) < TRIBES.len() && TRIBES[u.tribe as usize].nomad { Era::Empire } else { self.world.era },
+                            nation: u.nation as usize,
+                            ut: u.ut,
                             pw: u.power,
                             nc,
                             carry,
@@ -2767,12 +2771,12 @@ impl Game {
                             self.gfx.draw_bitmap(bmp, sx - r, sy - r * 1.05, sx + r, sy + r * 0.95);
                         }
                     }
-                    WorldItem::Building { sx, sy, r, kind, nc, done, progress, hp_frac, fogged, divine } => {
+                    WorldItem::Building { sx, sy, r, kind, origin, nc, done, progress, hp_frac, fogged, divine } => {
                         let alpha = if done { 1.0 } else { 0.65 };
                         let b_bmp = if divine {
                             self.art.divine_bld_sprite(kind, fogged)
                         } else {
-                            self.art.bld_sprite(kind, fogged)
+                            self.art.national_building(origin, kind, fogged)
                         };
                         if let Some(bmp) = b_bmp {
                             self.gfx.draw_bitmap_alpha(bmp, sx - r, sy - r * 1.08, sx + r, sy + r * 0.92, alpha);
@@ -2807,7 +2811,7 @@ impl Game {
                             self.gfx.fill_round(sx - bw * 0.5, by, sx - bw * 0.5 + bw * f, by + 3.5, 1.5, [1.0 - f, 0.22 + 0.75 * f, 0.15, 0.95]);
                         }
                     }
-                    WorldItem::Unit { sx, sy, kind, ue, pw, nc, carry, flip_x, hp_frac, hero, divine } => {
+                    WorldItem::Unit { sx, sy, kind, nation, ut, pw, nc, carry, flip_x, hp_frac, hero, divine } => {
                         let is_hero = (hero as usize) < HEROES.len();
                         let scale = if is_hero {
                             if kind == UnitKind::Cavalry { 0.88 } else { 0.78 }
@@ -2821,11 +2825,11 @@ impl Game {
                         let max_r = if is_hero { 27.0 } else if divine { 24.0 } else { 22.0 };
                         let r = (z * scale * (1.0 + 0.04 * (pw - 1.0).min(4.0))).clamp(7.5, max_r);
                         let u_bmp = if is_hero {
-                            self.art.hero_sprite(HEROES[hero as usize].sprite as usize, flip_x)
+                            self.art.period_hero(hero as usize, flip_x)
                         } else if divine {
                             self.art.divine_unit_sprite(kind, flip_x)
                         } else {
-                            self.art.unit_sprite(kind, ue, flip_x)
+                            self.art.national_unit(nation, ut, flip_x)
                         };
                         if let Some(bmp) = u_bmp {
                             self.gfx.draw_bitmap(bmp, sx - r, sy - r * 1.35, sx + r, sy + r * 0.65);
@@ -2981,7 +2985,12 @@ impl Game {
         let bh = y1 - y0;
         let mut tx0 = x0;
         if let Some(ci) = self.act_cmd_icon(act) {
-            if let Some(ibmp) = &self.art.cmd_icons[ci as usize] {
+            let ibmp = match act {
+                Act::Train(ut) => self.art.national_unit(self.world.player, ut, false),
+                Act::Place(k) => self.art.national_building(self.world.player, k, false),
+                _ => self.art.cmd_icons[ci as usize].as_ref(),
+            };
+            if let Some(ibmp) = ibmp {
                 if bh >= 36.0 && !(self.gfx.compact && y1 <= self.top_h()) {
                     let isz = (bh - 10.0).min(34.0);
                     let iy = y0 + (bh - isz) * 0.5;
@@ -3077,6 +3086,7 @@ impl Game {
         let tf = if self.gfx.measure(title, Font::Title) <= plaque - 8.0 { Font::Title } else { Font::TitleMid };
         self.gfx.text_shadow(title, px, 19.0, 380.0, 56.0, tf, [1.0, 0.86, 0.42, 1.0]);
         self.gfx.text_shadow(t!("— ユーラシア統一への道 —", "— The Road to a World Empire —", "— 欧亚一统之路 —"), px, 76.0, 380.0, 28.0, Font::BigCenter, [0.96, 0.90, 0.78, 1.0]);
+        self.gfx.text("1115 — 1294  /  EURASIA", px, 110.0, 380.0, 18.0, Font::NormalCenter, [0.58, 0.73, 0.77, 1.0]);
 
         let compact = self.gfx.compact;
         if !compact || self.title_sel.is_none() {
@@ -3098,7 +3108,7 @@ impl Game {
             let oy = if compact { 132.0 - 316.0 } else { 0.0 };
             self.art.draw_inset_box(&self.gfx, px + 18.0, oy + 316.0, w - 18.0, oy + 522.0);
             self.art.draw_corner_ornaments(&self.gfx, px + 20.0, oy + 318.0, w - 20.0, oy + 520.0, 12.0);
-            if let Some(cap_ic) = self.art.bld_icon(BKind::Capital) {
+            if let Some(cap_ic) = self.art.national_building(self.title_sel.unwrap_or(self.world.player), BKind::Capital, false) {
                 self.gfx.draw_bitmap(cap_ic, px + 30.0, oy + 328.0, px + 78.0, oy + 376.0);
             }
             self.gfx.fill_rect(px + 86.0, oy + 336.0, px + 104.0, oy + 368.0, c4(n.color, 1.0));
@@ -3560,7 +3570,6 @@ impl Game {
 
     fn render_info(&mut self, x: f32, y: f32, wd: f32) {
         let pl = self.world.player;
-        let era = self.world.era;
         let cap = self.world.power_cap();
         let tc = [0.95, 0.92, 0.85, 1.0];
         if self.sel.len() == 1 {
@@ -3575,11 +3584,11 @@ impl Game {
             self.gfx.fill_circle(px0 + psz * 0.5, py0 + psz * 0.74, psz * 0.34, c4(nc, 0.42));
             self.gfx.stroke_circle(px0 + psz * 0.5, py0 + psz * 0.74, psz * 0.34, 1.5, c4(nc, 0.9));
             let sprite_bmp = if (u.hero as usize) < HEROES.len() {
-                self.art.hero_sprite(HEROES[u.hero as usize].sprite as usize, false)
+                self.art.period_hero(u.hero as usize, false)
             } else if u.divine {
-                self.art.divine_unit_sprite(u.kind, false).or_else(|| self.art.unit_sprite(u.kind, era, false))
+                self.art.divine_unit_sprite(u.kind, false).or_else(|| self.art.national_unit(u.nation as usize, u.ut, false))
             } else {
-                self.art.unit_sprite(u.kind, era, false)
+                self.art.national_unit(u.nation as usize, u.ut, false)
             };
             if let Some(bmp) = sprite_bmp {
                 self.gfx.draw_bitmap(bmp, px0 + 2.0, py0 + 2.0, px0 + psz - 2.0, py0 + psz - 2.0);
@@ -3653,9 +3662,9 @@ impl Game {
                     let bx1 = ix + 86.0;
                     let by1 = y + 72.0;
                     let hov = mx >= bx0 && mx <= bx1 && my >= by0 && my <= by1;
-                    self.gfx.fill_round(bx0, by0, bx1, by1, 4.0, if hov { [0.35, 0.28, 0.16, 0.95] } else { [0.16, 0.12, 0.08, 0.9] });
-                    self.gfx.stroke_round(bx0, by0, bx1, by1, 4.0, 1.2, [0.78, 0.64, 0.34, 0.9]);
-                    if let Some(bmp) = self.art.unit_icon(kinds[k], era) {
+                    self.gfx.fill_round(bx0, by0, bx1, by1, 4.0, if hov { [0.10, 0.29, 0.36, 0.98] } else { [0.055, 0.13, 0.18, 0.96] });
+                    self.gfx.stroke_round(bx0, by0, bx1, by1, 4.0, 1.2, [0.40, 0.56, 0.59, 0.9]);
+                    if let Some(bmp) = self.art.national_unit(pl, native_ut(pl, kinds[k]), false) {
                         self.gfx.draw_bitmap(bmp, bx0 + 3.0, by0 + 3.0, bx0 + 41.0, by1 - 3.0);
                     }
                     let ks = format!("×{}", cnt[k]);
@@ -3691,9 +3700,9 @@ impl Game {
             let psz = 68.0;
             self.gfx.fill_rect(px0 - 2.0, py0 - 2.0, px0 + psz + 2.0, py0 + psz + 2.0, if is_divine_city { [0.95, 0.85, 0.45, 0.95] } else { c4(nc, 0.9) });
             let bld_bmp = if is_divine_city {
-                self.art.divine_bld_sprite(b.kind, false).or_else(|| self.art.bld_icon(b.kind))
+                self.art.divine_bld_sprite(b.kind, false).or_else(|| self.art.national_building(b.origin as usize, b.kind, false))
             } else {
-                self.art.bld_icon(b.kind)
+                self.art.national_building(b.origin as usize, b.kind, false)
             };
             if let Some(bmp) = bld_bmp {
                 self.gfx.draw_bitmap(bmp, px0, py0, px0 + psz, py0 + psz);
@@ -3731,15 +3740,15 @@ impl Game {
                     BKind::Fort => t!("近づく敵兵を射る（射程9）。数は城邑の数で決まる上限まで。", "Shoots enemy soldiers that come near (range 9). How many you may build depends on your number of cities.", "射击靠近的敌兵（射程9）。数量上限取决于城邑数。"),
                 }
             };
-            let queue: Vec<(UnitKind, f32)> = b.queue.iter().enumerate().map(|(i, &k)| (udef(k).class, if i == 0 { b.queue_t / udef(k).time } else { 0.0 })).collect();
+            let queue: Vec<(u8, f32)> = b.queue.iter().enumerate().map(|(i, &k)| (k, if i == 0 { b.queue_t / udef(k).time } else { 0.0 })).collect();
             self.gfx.text_shadow(&title, tx, y, tw, 28.0, Font::Big, tc);
             self.gfx.text(&s, tx, y + 30.0, tw, 24.0, Font::Normal, tc);
             self.gfx.text(desc, tx, y + 56.0, tw, 40.0, Font::Small, [0.80, 0.76, 0.68, 1.0]);
             for (i, (k, f)) in queue.iter().enumerate() {
                 let qx = tx + i as f32 * 44.0;
                 let qy = y + 98.0;
-                self.gfx.fill_round(qx, qy, qx + 40.0, qy + 40.0, 3.0, [0.18, 0.14, 0.10, 1.0]);
-                if let Some(ubmp) = self.art.unit_icon(*k, era) {
+                self.gfx.fill_round(qx, qy, qx + 40.0, qy + 40.0, 3.0, [0.055, 0.13, 0.18, 1.0]);
+                if let Some(ubmp) = self.art.national_unit(b.nation as usize, *k, false) {
                     self.gfx.draw_bitmap(ubmp, qx + 2.0, qy + 2.0, qx + 38.0, qy + 38.0);
                 }
                 if *f > 0.0 {
@@ -3755,9 +3764,9 @@ impl Game {
             let psz = 68.0;
             self.gfx.fill_rect(px0 - 2.0, py0 - 2.0, px0 + psz + 2.0, py0 + psz + 2.0, if is_divine { [0.95, 0.85, 0.45, 0.95] } else { c4(nc, 0.9) });
             let cap_bmp = if is_divine {
-                self.art.divine_bld_sprite(BKind::Capital, false).or_else(|| self.art.bld_icon(BKind::Capital))
+                self.art.divine_bld_sprite(BKind::Capital, false).or_else(|| self.art.national_building(pl, BKind::Capital, false))
             } else {
-                self.art.bld_icon(BKind::Capital)
+                self.art.national_building(pl, BKind::Capital, false)
             };
             if let Some(bmp) = cap_bmp {
                 self.gfx.draw_bitmap(bmp, px0, py0, px0 + psz, py0 + psz);
@@ -3810,9 +3819,9 @@ impl Game {
                 let bx1 = ix + 78.0;
                 let by1 = y + 122.0;
                 let hov = mx >= bx0 && mx <= bx1 && my >= by0 && my <= by1;
-                self.gfx.fill_round(bx0, by0, bx1, by1, 4.0, if hov { [0.35, 0.28, 0.16, 0.95] } else { [0.16, 0.12, 0.08, 0.9] });
-                self.gfx.stroke_round(bx0, by0, bx1, by1, 4.0, 1.1, [0.78, 0.64, 0.34, 0.85]);
-                if let Some(bmp) = self.art.unit_icon(kinds[k], era) {
+                self.gfx.fill_round(bx0, by0, bx1, by1, 4.0, if hov { [0.10, 0.29, 0.36, 0.98] } else { [0.055, 0.13, 0.18, 0.96] });
+                self.gfx.stroke_round(bx0, by0, bx1, by1, 4.0, 1.1, [0.40, 0.56, 0.59, 0.85]);
+                if let Some(bmp) = self.art.national_unit(pl, native_ut(pl, kinds[k]), false) {
                     self.gfx.draw_bitmap(bmp, bx0 + 3.0, by0 + 3.0, bx0 + 37.0, by1 - 3.0);
                 }
                 let ks = format!("×{}", cnt[k]);
