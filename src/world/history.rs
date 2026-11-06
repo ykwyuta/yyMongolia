@@ -517,6 +517,17 @@ impl World {
         self.banner = self.banner_queue.pop_front();
     }
 
+    /// 待っている告知の数（いま出ているものを除く）
+    pub fn banners_waiting(&self) -> usize {
+        self.banner_queue.len()
+    }
+
+    /// 告知をすべて閉じる（記録欄と史記には残る）
+    pub fn dismiss_all_banners(&mut self) {
+        self.banner = None;
+        self.banner_queue.clear();
+    }
+
     pub fn queue_banner(&mut self, b: Banner) {
         if self.banner.is_none() {
             self.banner = Some(b);
