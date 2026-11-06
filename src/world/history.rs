@@ -75,7 +75,7 @@ pub enum Fx {
     Plunder(f32),
     /// 君主家（国姓）が変わる
     House(&'static str),
-    /// 指定国を標的とした合従軍
+    /// 指定国を標的とした反〇〇同盟（隣国が結ぶ）
     Hezong(usize),
     /// 自国を標的とする連合を解散させる（連衡）
     Breakup,
@@ -410,7 +410,7 @@ impl World {
                 Hezong(t) => {
                     if self.nations[t].alive && !self.coalitions.iter().any(|c| c.target == t) && self.start_coalition_ex(CoalKind::Hezong, t, false) {
                         let c = self.coalitions.last().unwrap();
-                        notes.push(tf!("{}か国の合従軍が{}を攻める（盟主{}）", "an alliance of {} states attacks {} (led by {})", "{}国合纵军进攻{}（盟主{}）", c.members.len(), tx(self.nations[t].name), tx(self.nations[c.leader].name)));
+                        notes.push(tf!("隣国{}か国が反{}同盟を結ぶ", "{} neighbours form the Anti-{} League", "{}个邻国结成反{}同盟", c.members.len(), tx(self.nations[t].name)));
                     }
                 }
                 Breakup => {

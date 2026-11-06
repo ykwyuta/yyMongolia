@@ -173,6 +173,9 @@ pub enum BKind {
 /// 城邑が無くても持てる民・兵の数（滅んだ国から分けられる量）
 pub const BASE_CAP: u32 = 4;
 
+/// 城邑どうしがこれより近ければ、領土が接していなくても隣国とみなす（マス）
+pub const NEIGHBOR_RANGE: f32 = 45.0;
+
 /// 要塞の射程・攻撃間隔
 pub const FORT_RANGE: f32 = 9.0;
 pub const FORT_COOLDOWN: f32 = 1.5;
@@ -2834,11 +2837,10 @@ impl World {
                     self.propose_peace(m, c.target, 8.0, t!("連合の解散", "the coalition disbanded", "联军解散"));
                 }
             }
-            let name = if c.kind == CoalKind::Hegemon { t!("盟主の呼びかけによる討伐", "The Overlord's campaign", "盟主号召的讨伐") } else { t!("大同盟", "The Grand Alliance", "大同盟") };
-            let t = tf!("{}（{}討伐）が解散した", "{} against {} has disbanded", "{}（讨伐{}）已解散", name, tx(self.nations[c.target].name));
+            let t = tf!("反{}同盟が解散した", "The Anti-{} League has disbanded", "反{}同盟已解散", tx(self.nations[c.target].name));
             self.push_msg(t, [0.9, 0.9, 0.6]);
         }
-        // 盟主の呼びかけ（群雄割拠の時代）
+        // 反〇〇同盟（群雄割拠の時代）：侵略を重ねて隣国の警戒を招いた国に、隣国が同盟して立ち向かう
         if self.era == Era::Rise {
             let mut cand = None;
             for (i, n) in self.nations.iter().enumerate() {
@@ -2851,7 +2853,7 @@ impl World {
                 self.start_coalition(CoalKind::Hegemon, t);
             }
         } else if self.years >= self.hezong_next {
-            // 大同盟（大モンゴル国の時代）
+            // 反〇〇同盟（大モンゴル国の時代）：強大になりすぎた国を恐れた隣国が同盟する
             let mut ranks: Vec<(f32, usize)> = self.nations.iter().enumerate().filter(|(_, n)| n.alive).map(|(i, n)| (n.strength, i)).collect();
             ranks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             if ranks.len() >= 3 && ranks[0].0 > ranks[1].0 * 1.2 && !self.coalitions.iter().any(|c| c.kind == CoalKind::Hezong) {
@@ -2882,27 +2884,53 @@ impl World {
         self.start_coalition_ex(kind, target, true);
     }
 
-    /// 連合を結成する。announce が偽なら通知は呼び出し側に任せる
-    fn start_coalition_ex(&mut self, kind: CoalKind, target: usize, announce: bool) -> bool {
-        let tc = self.nations[target].home;
-        // ユーラシアは広いので、近くの国（陸づたいに行ける国）だけが加わる
-        let reach = if kind == CoalKind::Hegemon { 90.0 } else { 150.0 };
-        let mut members: Vec<usize> = (0..NATIONS.len())
-            .filter(|&i| i != target && self.nations[i].alive && self.nations[i].home.dist(tc) <= reach && (self.same_land(self.nations[i].home, tc) || self.can_build_ships(i)))
-            .collect();
-        // 盟主：最も強い参加国（覇者）
-        let mut leader = None;
-        let mut best = -1.0;
-        for (i, n) in self.nations.iter().enumerate() {
-            if i != target && n.alive && n.strength > best && members.contains(&i) {
-                best = n.strength;
-                leader = Some(i);
+    /// その国と隣り合う国：領土が接する国と、城邑が近い国（海の向こうの国は船を造れる場合だけ）
+    pub fn neighbors_of(&self, t: usize) -> Vec<usize> {
+        let nn = NATIONS.len();
+        let mut adj = vec![false; nn];
+        let tt = t as u8;
+        for y in 0..MAP_H as i32 {
+            for x in 0..MAP_W as i32 {
+                let o = self.owner[Map::idx(x, y)];
+                for (dx, dy) in [(1, 0), (0, 1)] {
+                    if !Map::inb(x + dx, y + dy) {
+                        continue;
+                    }
+                    let p = self.owner[Map::idx(x + dx, y + dy)];
+                    if o == p || o == NONE || p == NONE {
+                        continue;
+                    }
+                    if o == tt && (p as usize) < nn {
+                        adj[p as usize] = true;
+                    } else if p == tt && (o as usize) < nn {
+                        adj[o as usize] = true;
+                    }
+                }
             }
         }
-        let Some(leader) = leader else { return false };
-        if !members.contains(&leader) {
-            members.push(leader);
+        let mine: Vec<V2> = self.blds.iter().filter(|b| b.alive && b.kind.city() && b.done() && b.nation as usize == t).map(|b| b.center()).collect();
+        for b in self.blds.iter() {
+            let o = b.nation as usize;
+            if !b.alive || !b.kind.city() || !b.done() || o == t || o >= nn || adj[o] {
+                continue;
+            }
+            let c = b.center();
+            if mine.iter().any(|&m| m.dist(c) <= NEIGHBOR_RANGE && (self.same_land(m, c) || self.can_build_ships(o))) {
+                adj[o] = true;
+            }
         }
+        (0..nn).filter(|&i| adj[i] && i != t && self.nations[i].alive).collect()
+    }
+
+    /// 反〇〇同盟を結成する（標的と隣り合う国だけが加わる）。announce が偽なら通知は呼び出し側に任せる
+    fn start_coalition_ex(&mut self, kind: CoalKind, target: usize, announce: bool) -> bool {
+        let members: Vec<usize> = self.neighbors_of(target);
+        // 最も強い参加国（記録用。同盟を率いる盟主ではない）
+        let leader = members.iter().copied().max_by(|&a, &b| self.nations[a].strength.partial_cmp(&self.nations[b].strength).unwrap());
+        let Some(leader) = leader else {
+            self.nations[target].hegemon_cd = self.years + 10.0;
+            return false;
+        };
         if members.len() < 2 {
             self.nations[target].hegemon_cd = self.years + 10.0;
             return false;
@@ -2920,14 +2948,25 @@ impl World {
             self.declare_war(m, target, true);
         }
         let dur = 15.0;
-        let (title, text) = match kind {
-            CoalKind::Hegemon => (
-                t!("盟主の呼びかけ", "The Overlord's Call", "盟主号召").to_string(),
-                tf!("{} が諸国に呼びかけた。{} を討つべく {} か国が兵を挙げる（{}年間）", "{0} has called on its neighbours. {2} states take up arms against {1} ({3} years)", "{}号召诸国，{2}国起兵讨伐{1}（{3}年）", tx(self.nations[leader].name), tx(self.nations[target].name), members.len(), dur as i32),
+        let tn = tx(self.nations[target].name);
+        let mut names: Vec<&str> = members.iter().take(5).map(|&m| tx(self.nations[m].name)).collect();
+        if members.len() > 5 {
+            names.push(t!("など", "and others", "等"));
+        }
+        let list = names.join(sep());
+        let title = tf!("反{}同盟", "The Anti-{} League", "反{}同盟", tn);
+        let text = match kind {
+            CoalKind::Hegemon => tf!(
+                "{0} の度重なる侵略に、国境を接する {1} の {2} か国が反{0}同盟を結び、ともに兵を挙げた（{3}年間）",
+                "Alarmed by {0}'s repeated aggression, its {2} neighbours ({1}) have formed the Anti-{0} League and taken up arms together ({3} years)",
+                "面对{0}屡次侵略，接壤的{1}等{2}国结成反{0}同盟，共同起兵（{3}年）",
+                tn, list, members.len(), dur as i32
             ),
-            CoalKind::Hezong => (
-                t!("大同盟", "Grand Alliance", "大同盟").to_string(),
-                tf!("最強国 {} に対し、{} を盟主として {} か国が同盟した（{}年間）", "{2} states led by {1} have allied against {0}, the strongest power ({3} years)", "以{1}为盟主的{2}国结盟，对抗最强国{0}（{3}年）", tx(self.nations[target].name), tx(self.nations[leader].name), members.len(), dur as i32),
+            CoalKind::Hezong => tf!(
+                "強大になりすぎた {0} を恐れ、隣り合う {1} の {2} か国が反{0}同盟を結んだ（{3}年間）",
+                "Fearing the overwhelming might of {0}, its {2} neighbours ({1}) have formed the Anti-{0} League ({3} years)",
+                "畏惧过于强大的{0}，相邻的{1}等{2}国结成反{0}同盟（{3}年）",
+                tn, list, members.len(), dur as i32
             ),
         };
         if announce {
@@ -3058,7 +3097,8 @@ mod tests {
         // 海の向こうの国（日本など）も含めて、城邑はすべてモンゴルのものになる
         let others = w.blds.iter().filter(|b| b.alive && b.kind.city() && b.nation as usize != MONGOL).count();
         assert_eq!(others, 0, "{:?}", alive);
-        assert!(w.years - d.start <= DESCENT_YEARS + 1.01);
+        // 最後の年に自国が滅ぶと先に「滅ぼされた」で終わり、このテストはそれを消して進めるので、1年余分にかかることがある
+        assert!(w.years - d.start <= DESCENT_YEARS + 2.01, "降臨から {} 年", w.years - d.start);
         assert!(matches!(&w.game_over, Some((false, _))));
     }
 
@@ -3288,6 +3328,26 @@ mod tests {
         assert!(w.nations[MONGOL].bias > b0 * 2.0, "国力 {} → {}", b0, w.nations[MONGOL].bias);
         // 服属させた部族の兵も作れる（同じ草原の兵なので重複しない）
         assert!(w.subject_origins(MONGOL).contains(&KERAIT));
+    }
+
+    /// 反〇〇同盟：侵略を重ねた国には、国境を接する国だけが同盟して攻めてくる（遠くの国や盟主の呼びかけは無い）
+    #[test]
+    fn anti_league_by_neighbors() {
+        let mut w = World::new(12345);
+        w.player = POLAND;
+        let nb = w.neighbors_of(SONG);
+        println!("宋の隣国 {:?}", nb.iter().map(|&i| NATIONS[i].name).collect::<Vec<_>>());
+        assert!(nb.contains(&LIAO) || nb.contains(&XIXIA), "宋の隣国に遼・西夏が無い");
+        assert!(!nb.contains(&EGYPT) && !nb.contains(&POLAND) && !nb.contains(&JAPAN));
+        w.nations[SONG].aggression = 120.0;
+        w.yearly();
+        let c = w.coalitions.iter().find(|c| c.target == SONG).expect("反宋同盟ができない");
+        assert_eq!(c.members, nb);
+        for &m in c.members.iter() {
+            assert!(w.war[m][SONG]);
+        }
+        assert!(w.msgs.iter().any(|m| m.text.contains("反宋同盟")));
+        assert!(!w.war[EGYPT][SONG]);
     }
 
     /// 建設の予約：民は今の建設を終えてから、予約した順に建てていく
