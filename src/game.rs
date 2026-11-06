@@ -1593,7 +1593,7 @@ impl Game {
             if u.nation as usize != self.world.player && !self.seen(u.pos) {
                 continue;
             }
-            let r: f32 = if u.kind == UnitKind::Worker { 0.45 } else if u.kind.naval() { 0.9 } else { 0.55 };
+            let r: f32 = if u.kind == UnitKind::Worker { 0.45 } else if u.kind.naval() { 1.6 } else { 0.55 };
             // タッチは指の太さぶん広く拾う（画面上で約 18 単位）
             let r = if self.touch { r.max(18.0 / self.zoom) } else { r };
             let d = u.pos.dist(p);
@@ -3358,7 +3358,8 @@ impl Game {
         }
 
         // ---- 連合情報
-        let mut cy = self.top_h() + 6.0;
+        // 右上の「記録 F5」ボタンの下から並べる（重ならないように）。タッチ向けの画面では記録は上部バーにある
+        let mut cy = self.top_h() + if self.gfx.compact { 6.0 } else { 36.0 };
         let years = self.world.years;
         // 反〇〇同盟の一覧：（文面, 自国が標的・参加しているか）
         let coal: Vec<(String, bool)> = self
@@ -3428,7 +3429,8 @@ impl Game {
                 self.buttons.push(Button { x0: w - lw, y0: list_y0, x1: w - 6.0, y1: cy, label: String::new(), key: 0, enabled: true, act: Act::ToggleAlerts, tip: String::new() });
             }
         }
-        let _ = cy;
+        // 告知（画面の中央上）が同盟の一覧の下に潜らないよう、一覧の下端を覚えておく
+        let right_list_bottom = cy;
 
         // ---- メッセージ
         let now = self.world.time;
@@ -3455,7 +3457,11 @@ impl Game {
             let (title, text) = (b.title.clone(), b.text.clone());
             let bw = 760.0f32.min(w - 40.0);
             let x0 = (w - bw) / 2.0;
-            let y0 = self.top_h() + if self.gfx.compact { 40.0 } else { 90.0 };
+            let mut y0 = self.top_h() + if self.gfx.compact { 40.0 } else { 90.0 };
+            // 右上の同盟の一覧と横に重なるなら、その下へずらす
+            if x0 + bw > w - 472.0 && right_list_bottom > y0 - 4.0 {
+                y0 = right_list_bottom + 6.0;
+            }
             let th = self.gfx.measure_h(&text, Font::NormalCenter, bw - 40.0).max(24.0);
             let bh = 66.0 + th + if self.gfx.compact { 34.0 } else { 14.0 };
             self.art.draw_stone_panel(&self.gfx, x0, y0, x0 + bw, y0 + bh);

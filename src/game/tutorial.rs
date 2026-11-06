@@ -411,7 +411,8 @@ impl Game {
         // パネル
         let w = self.gfx.width as f32;
         let x0 = w - PANEL_W - 10.0;
-        let y0 = self.top_h() + 10.0;
+        // 右上の「記録 F5」ボタンと重ならないよう、その下から
+        let y0 = self.top_h() + if self.gfx.compact { 10.0 } else { 36.0 };
         if self.show_help || self.show_diplo || self.show_chron || self.show_market || self.show_save {
             // 外交・ヘルプ画面を隠さないよう小さな帯にする
             let y1 = y0 + 30.0;

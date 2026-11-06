@@ -5,6 +5,9 @@ use super::*;
 /// これより近い目的地へは、陸続きなら船を使わない（マス）
 pub const FERRY_MIN_DIST: f32 = 30.0;
 
+/// 船に乗れる距離（マス）。岸から少し離れていても乗れるよう広めにとる
+pub const BOARD_RANGE: f32 = 3.5;
+
 impl World {
     /// 兵を船に乗せる命令（船の定員まで。船は岸の近くにいなければならない）
     pub fn order_board(&mut self, hs: &[Handle], ship: Handle) {
@@ -13,7 +16,9 @@ impl World {
         if !s.kind.naval() {
             return;
         }
-        let sn = s.nation;
+        let (sn, sp) = (s.nation, s.pos);
+        let mut sum = v2(0.0, 0.0);
+        let mut k = 0.0;
         for &h in hs {
             if h == ship {
                 continue;
@@ -24,6 +29,24 @@ impl World {
                     u.resume = None;
                     u.build_queue.clear();
                     u.reset_nav();
+                    sum = sum + u.pos;
+                    k += 1.0;
+                }
+            }
+        }
+        // 船が岸から遠ければ（または兵から遠ければ）、兵のいちばん近くの岸辺へ船の方から迎えに行く
+        if k > 0.0 {
+            let c = sum * (1.0 / k);
+            let shore_near_ship = !self.land_near(sp, 1).is_empty();
+            if !shore_near_ship || sp.dist(c) > 12.0 {
+                if let Some(q) = self.shore_water_near(c, 10).filter(|&q| self.sea_at(q) == self.sea_at(sp)) {
+                    if let Some(su) = self.unit_mut(ship) {
+                        if su.cargo.is_empty() || su.order == Order::Idle {
+                            su.order = Order::Move(q);
+                            su.resume = None;
+                            su.reset_nav();
+                        }
+                    }
                 }
             }
         }
@@ -86,7 +109,7 @@ impl World {
         }
         let sp = self.unit(sh).unwrap().pos;
         let pos = self.units[i].pos;
-        if pos.dist(sp) <= 1.9 {
+        if pos.dist(sp) <= BOARD_RANGE {
             let me = self.uh(i);
             let u = &mut self.units[i];
             u.aboard = Some(sh);
@@ -97,9 +120,10 @@ impl World {
             self.unit_mut(sh).unwrap().cargo.push(me);
             return;
         }
-        // 船のそばの陸へ
-        let goal = self.land_near(sp, 1).first().copied().unwrap_or(sp);
-        if self.nav(i, goal, 0.5, dt) && self.units[i].pos.dist(sp) > 1.9 {
+        // 船のそばの陸へ（船が動いていれば、着くまで岸の近くで待つ）
+        let goal = self.land_near(sp, 2).first().copied().unwrap_or(sp);
+        let ship_moving = self.unit(sh).map_or(false, |s| matches!(s.order, Order::Move(_)));
+        if self.nav(i, goal, 0.5, dt) && self.units[i].pos.dist(sp) > BOARD_RANGE && !ship_moving {
             self.units[i].order = Order::Idle;
         }
     }
@@ -241,7 +265,7 @@ impl World {
         // 迎えの船がそばにいれば乗る
         let ship = (0..self.units.len()).find(|&k| {
             let s = &self.units[k];
-            s.on_map() && s.kind.naval() && s.nation == ni && s.cargo.len() < SHIP_CAP && s.pos.dist(pos) <= 2.6 && matches!(s.order, Order::Shuttle(g, _) if g.dist(goal) < 4.0)
+            s.on_map() && s.kind.naval() && s.nation == ni && s.cargo.len() < SHIP_CAP && s.pos.dist(pos) <= BOARD_RANGE && matches!(s.order, Order::Shuttle(g, _) if g.dist(goal) < 4.0)
         });
         if let Some(k) = ship {
             let sh = self.uh(k);

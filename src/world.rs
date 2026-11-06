@@ -3422,6 +3422,39 @@ mod tests {
         let _ = ship;
     }
 
+    /// 乗船は広めに：沖にいる船を選んで乗せると、船の方から岸へ迎えに来て、少し離れていても乗れる
+    #[test]
+    fn board_ship_offshore() {
+        let mut w = World::new(12345);
+        let n = JAPAN;
+        w.player = n;
+        let dz = w.blds.iter().find(|b| b.alive && b.nation as usize == n && b.kind == BKind::Town && tile_to_ll(b.center().x, b.center().y).0 < 132.0).unwrap().center();
+        // 岸から5マス以上離れた沖の水
+        let mut off = None;
+        'o: for r in 6..20 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let p = v2(dz.x + dx as f32 + 0.5, dz.y + dy as f32 + 0.5);
+                    if w.passable_l(p, true) && w.map.terrain[Map::idx(p.x as i32, p.y as i32)] == Terrain::Sea && w.land_near(p, 4).is_empty() {
+                        off = Some(p);
+                        break 'o;
+                    }
+                }
+            }
+        }
+        let ship = w.spawn_unit(n, 23, off.expect("沖が無い"), 1.0);
+        let land = w.land_near(dz, 3);
+        let troops: Vec<Handle> = (0..3).map(|k| w.spawn_unit(n, 20, land[k % land.len()], 1.0)).collect();
+        w.order_board(&troops, ship);
+        for _ in 0..(90.0 / DT) as usize {
+            w.step();
+            if w.unit(ship).unwrap().cargo.len() == 3 {
+                break;
+            }
+        }
+        assert_eq!(w.unit(ship).unwrap().cargo.len(), 3, "沖の船に乗れない");
+    }
+
     /// 靖康の変（1127年）：宋の北の城邑は金に、残りは南宋に。プレイヤーの宋は南宋を引き継ぐ
     #[test]
     fn jingkang_creates_southern_song() {
