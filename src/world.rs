@@ -3455,6 +3455,32 @@ mod tests {
         assert_eq!(w.unit(ship).unwrap().cargo.len(), 3, "沖の船に乗れない");
     }
 
+    /// 複数の兵を複数の船にまとめて乗せる（兵10人・船2隻）。乗りきれない分は数を返す
+    #[test]
+    fn board_many_ships() {
+        let mut w = World::new(12345);
+        let n = JAPAN;
+        w.player = n;
+        let dz = w.blds.iter().find(|b| b.alive && b.nation as usize == n && b.kind == BKind::Town && tile_to_ll(b.center().x, b.center().y).0 < 132.0).unwrap().center();
+        let water = w.shore_water_near(dz, 14).expect("岸が無い");
+        let ships: Vec<Handle> = (0..2).map(|k| w.spawn_unit(n, 23, water + v2(k as f32 * 0.6, 0.0), 1.0)).collect();
+        let land = w.land_near(dz, 3);
+        let troops: Vec<Handle> = (0..10).map(|k| w.spawn_unit(n, 20, land[k % land.len()], 1.0)).collect();
+        assert_eq!(w.order_board_many(&troops, &ships), 0);
+        for _ in 0..(90.0 / DT) as usize {
+            w.step();
+            if ships.iter().map(|&s| w.unit(s).unwrap().cargo.len()).sum::<usize>() == 10 {
+                break;
+            }
+        }
+        let c: Vec<usize> = ships.iter().map(|&s| w.unit(s).unwrap().cargo.len()).collect();
+        assert_eq!(c.iter().sum::<usize>(), 10, "{:?}", c);
+        assert!(c.iter().all(|&k| k <= SHIP_CAP));
+        // 満員なら、乗れない数を返す
+        let more: Vec<Handle> = (0..3).map(|k| w.spawn_unit(n, 20, land[k % land.len()], 1.0)).collect();
+        assert_eq!(w.order_board_many(&more, &ships), 1);
+    }
+
     /// 靖康の変（1127年）：宋の北の城邑は金に、残りは南宋に。プレイヤーの宋は南宋を引き継ぐ
     #[test]
     fn jingkang_creates_southern_song() {

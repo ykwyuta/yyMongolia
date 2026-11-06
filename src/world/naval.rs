@@ -52,6 +52,51 @@ impl World {
         }
     }
 
+    /// 複数の兵を複数の船にまとめて乗せる（どの船に乗るかは問わない：空きのある近い船から）。
+    /// 乗れなかった兵の数を返す
+    pub fn order_board_many(&mut self, land: &[Handle], ships: &[Handle]) -> usize {
+        // 船ごとの空き（既に乗りに向かっている兵の分も引く）
+        let mut room: Vec<(Handle, V2, usize)> = ships
+            .iter()
+            .filter_map(|&s| {
+                let u = self.unit(s)?;
+                if !u.on_map() || !u.kind.naval() {
+                    return None;
+                }
+                let coming = self.units.iter().filter(|x| x.alive && x.order == Order::Board(s)).count();
+                Some((s, u.pos, SHIP_CAP.saturating_sub(u.cargo.len() + coming)))
+            })
+            .collect();
+        let mut groups: Vec<Vec<Handle>> = vec![Vec::new(); room.len()];
+        let mut left = 0;
+        for &h in land {
+            let Some(u) = self.unit(h) else { continue };
+            if u.kind.naval() || u.aboard.is_some() {
+                continue;
+            }
+            let (pos, nat) = (u.pos, u.nation);
+            let best = room
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.2 > 0 && self.unit(r.0).map_or(false, |s| s.nation == nat))
+                .min_by(|a, b| a.1 .1.dist(pos).partial_cmp(&b.1 .1.dist(pos)).unwrap())
+                .map(|(k, _)| k);
+            match best {
+                Some(k) => {
+                    room[k].2 -= 1;
+                    groups[k].push(h);
+                }
+                None => left += 1,
+            }
+        }
+        for (k, g) in groups.into_iter().enumerate() {
+            if !g.is_empty() {
+                self.order_board(&g, room[k].0);
+            }
+        }
+        left
+    }
+
     /// 船に、この地点の近くの岸で兵を降ろすよう命じる
     pub fn order_unload(&mut self, hs: &[Handle], target: V2) {
         self.note_player_order(hs);
