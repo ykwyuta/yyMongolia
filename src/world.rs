@@ -3465,7 +3465,8 @@ mod tests {
         let water = w.shore_water_near(dz, 14).expect("岸が無い");
         let ships: Vec<Handle> = (0..2).map(|k| w.spawn_unit(n, 23, water + v2(k as f32 * 0.6, 0.0), 1.0)).collect();
         let land = w.land_near(dz, 3);
-        let troops: Vec<Handle> = (0..10).map(|k| w.spawn_unit(n, 20, land[k % land.len()], 1.0)).collect();
+        // 民と兵を混ぜて乗せる（民2人・兵8人）
+        let troops: Vec<Handle> = (0..10).map(|k| w.spawn_unit(n, if k < 2 { UT_WORKER } else { 20 }, land[k % land.len()], 1.0)).collect();
         assert_eq!(w.order_board_many(&troops, &ships), 0);
         for _ in 0..(90.0 / DT) as usize {
             w.step();

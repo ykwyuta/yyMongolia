@@ -4032,7 +4032,14 @@ impl Game {
                 let (x0, y0, x1, y1) = pos(i);
                 self.add_button(x0, y0, x1, y1, t!("進軍", "Attack-move", "进军"), t!("攻撃移動", "fight on the way", "攻击移动"), 'A' as u32, true, Act::AttackMove, t!("クリックした地点へ、途中の敵と戦いながら進む。", "March to the clicked point, fighting enemies on the way.", "向点击的地点进军，沿途与敌交战。"));
                 let (x0, y0, x1, y1) = pos(7);
-                self.add_button(x0, y0, x1, y1, t!("全民を選択", "All workers", "选择全民"), &tf!("全{}体", "all {}", "全{}名", n_workers), 'G' as u32, n_workers > 0, Act::SelectAllWorkers, t!("自国のすべての民を選択する。", "Select all your workers.", "选择我国全部民。"));
+                let n_ship = own.iter().filter(|&&h| self.world.unit(h).map_or(false, |u| u.kind.naval())).count();
+                let n_land = own.len() - n_ship;
+                if n_ship > 0 && n_land > 0 {
+                    // 民・兵と船を一緒に選んでいれば、まとめて乗せる
+                    self.add_button(x0, y0, x1, y1, t!("まとめて乗船", "Board all", "全部登船"), &tf!("{}人・船{}", "{} units, {} ships", "{}人・船{}", n_land, n_ship), 'G' as u32, true, Act::BoardAll, t!("選んだ民・兵を、選んだ船に空きのある近いものから乗せる（1隻に6人）。船は近くの岸へ迎えに来る。選んだ船を右クリックしても同じ", "Put the selected workers and troops aboard the selected ships, nearest ship with room first (6 each). The ships come to the nearby shore. Right-clicking one of the selected ships does the same", "将所选的民与士兵分别装上所选船只，优先选择有空位的近船（每船6人）。船会驶到附近岸边迎接。右键点击所选船只亦同"));
+                } else {
+                    self.add_button(x0, y0, x1, y1, t!("全民を選択", "All workers", "选择全民"), &tf!("全{}体", "all {}", "全{}名", n_workers), 'G' as u32, n_workers > 0, Act::SelectAllWorkers, t!("自国のすべての民を選択する。", "Select all your workers.", "选择我国全部民。"));
+                }
                 let (x0, y0, x1, y1) = pos(8);
                 self.add_button(x0, y0, x1, y1, t!("全軍を選択", "All soldiers", "选择全军"), &tf!("全{}体", "all {}", "全{}个", n_army), 'V' as u32, n_army > 0, Act::SelectAllMilitary, t!("自国のすべての軍事ユニットを選択する。", "Select all your soldiers.", "选择我国全部军事单位。"));
             }
