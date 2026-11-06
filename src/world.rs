@@ -482,6 +482,9 @@ pub struct World {
     pub land_region: Vec<u32>,
     /// 海の連結成分
     pub sea_region: Vec<u32>,
+    /// 粗い升目（GCELL×GCELL マス）ごとに、陸・海を通れるか（海路と陸路のざっくりした比較に使う）
+    pub coarse_land: Vec<bool>,
+    pub coarse_sea: Vec<bool>,
     pub bmap: Vec<u32>,
     pub owner: Vec<u8>,
     pub units: Vec<Unit>,
@@ -555,6 +558,27 @@ impl World {
         }
         let (land_region, _) = components(|i| map.terrain[i].passable());
         let (sea_region, _) = components(|i| map.terrain[i].sail_cost().is_finite());
+        // 粗い升目：半分以上のマスが通れれば通れるとみなす（細い海峡・山脈はざっくりでよい）
+        let coarse = |f: &dyn Fn(Terrain) -> bool| -> Vec<bool> {
+            let mut v = vec![false; (GW * GH) as usize];
+            for gy in 0..GH {
+                for gx in 0..GW {
+                    let mut k = 0;
+                    for dy in 0..GCELL {
+                        for dx in 0..GCELL {
+                            let (x, y) = (gx * GCELL + dx, gy * GCELL + dy);
+                            if Map::inb(x, y) && f(map.terrain[Map::idx(x, y)]) {
+                                k += 1;
+                            }
+                        }
+                    }
+                    v[(gy * GW + gx) as usize] = k * 2 >= GCELL * GCELL;
+                }
+            }
+            v
+        };
+        let coarse_land = coarse(&|t: Terrain| t.passable());
+        let coarse_sea = coarse(&|t: Terrain| t.sail_cost().is_finite());
         let nn = NATIONS.len();
         let mut w = World {
             map,
@@ -562,6 +586,8 @@ impl World {
             wcost,
             land_region,
             sea_region,
+            coarse_land,
+            coarse_sea,
             bmap: vec![0; n],
             owner: vec![NONE; n],
             tile_count: Vec::new(),
@@ -1366,6 +1392,7 @@ impl World {
         self.note_player_order(hs);
         let n = hs.len();
         let cols = (n as f32).sqrt().ceil() as i32;
+        let mut sea_faster: Option<bool> = None;
         for (k, &h) in hs.iter().enumerate() {
             let (r, c) = (k as i32 / cols.max(1), k as i32 % cols.max(1));
             let off = v2((c - cols / 2) as f32 * 0.8, (r - cols / 2) as f32 * 0.8);
@@ -1377,8 +1404,14 @@ impl World {
             if !self.passable_l(g, naval) {
                 g = goal;
             }
-            // 海の向こうへは、自国に船があれば船で渡る（岸で待てば船が迎えに来る）
-            let ferry = self.unit(h).map_or(false, |u| !u.kind.naval() && u.aboard.is_none() && !self.same_land(u.pos, g) && self.has_ships(u.nation as usize));
+            // 海の向こうへは、自国に船があれば船で渡る（岸で待てば船が迎えに来る）。
+            // 陸続きでも、海を回ったほうがずっと早ければ船を使う（部隊ごとに1回だけざっくり見積もる）
+            let ferry = self.unit(h).map_or(false, |u| !u.kind.naval() && u.aboard.is_none() && self.has_ships(u.nation as usize))
+                && match self.unit(h) {
+                    Some(u) if !self.same_land(u.pos, g) => true,
+                    Some(u) => *sea_faster.get_or_insert_with(|| self.sea_is_faster(u.nation as usize, u.pos, goal, u.def().speed)),
+                    None => false,
+                };
             if let Some(u) = self.unit_mut(h) {
                 if u.aboard.is_some() {
                     continue;
@@ -1401,10 +1434,13 @@ impl World {
     pub fn order_attack(&mut self, hs: &[Handle], t: Target) {
         self.note_player_order(hs);
         let tp = self.target_info(t).map(|x| x.0);
+        let mut sea_faster: Option<bool> = None;
         for &h in hs {
-            // 海の向こうの敵へは、船があれば船で渡ってから攻めかかる
+            // 海の向こうの敵へは、船があれば船で渡ってから攻めかかる（陸続きでも海路がずっと早ければ船で）
             let ferry = match (tp, self.unit(h)) {
-                (Some(p), Some(u)) => !u.kind.naval() && u.aboard.is_none() && !self.same_land(u.pos, p) && self.has_ships(u.nation as usize),
+                (Some(p), Some(u)) if !u.kind.naval() && u.aboard.is_none() && self.has_ships(u.nation as usize) => {
+                    !self.same_land(u.pos, p) || *sea_faster.get_or_insert_with(|| self.sea_is_faster(u.nation as usize, u.pos, p, u.def().speed))
+                }
                 _ => false,
             };
             if let Some(u) = self.unit_mut(h) {
@@ -3349,6 +3385,41 @@ mod tests {
             w.step();
         }
         assert_eq!(w.unit(ship).unwrap().order, Order::Idle);
+    }
+
+    /// 陸続きでも海路がずっと早ければ船を使う：慶州から臨安（杭州）へは黄海を渡る。近い所へは歩く
+    #[test]
+    fn ferry_when_sea_is_faster() {
+        let mut w = World::new(12345);
+        let n = GORYEO;
+        w.player = n;
+        let city = |w: &World, nat: usize, lon: f32| w.blds.iter().filter(|b| b.alive && b.nation as usize == nat && b.kind.city()).map(|b| b.center()).min_by(|a, b| (tile_to_ll(a.x, a.y).0 - lon).abs().partial_cmp(&(tile_to_ll(b.x, b.y).0 - lon).abs()).unwrap()).unwrap();
+        let gj = city(&w, n, 129.2);
+        let hz = city(&w, SONG, 120.15);
+        assert!(w.same_land(gj, hz), "高麗と宋が陸続きでない");
+        let water = w.shore_water_near(gj, 14).expect("岸が無い");
+        let ship = w.spawn_unit(n, 19, water, 1.0);
+        let land = w.land_near(gj, 3);
+        let troops: Vec<Handle> = (0..4).map(|k| w.spawn_unit(n, 7, land[k % land.len()], 1.0)).collect();
+        let t0 = std::time::Instant::now();
+        assert!(w.sea_is_faster(n, gj, hz, udef(7).speed));
+        println!("見積もりの時間 {:?}", t0.elapsed());
+        w.order_move(&troops, hz, false);
+        assert!(troops.iter().all(|&h| matches!(w.unit(h).unwrap().order, Order::Ferry(..))), "船を使わない");
+        // 開京へは歩く（近い）
+        let kg = city(&w, n, 126.55);
+        assert!(!w.sea_is_faster(n, gj, kg, udef(7).speed));
+        // 実際に海を渡って宋の近くに着く
+        for _ in 0..(300.0 / DT) as usize {
+            w.step();
+            if troops.iter().all(|&h| w.unit(h).map_or(true, |u| u.aboard.is_none() && u.pos.dist(hz) < 20.0)) {
+                break;
+            }
+        }
+        let near: Vec<f32> = troops.iter().filter_map(|&h| w.unit(h)).map(|u| u.pos.dist(hz)).collect();
+        println!("臨安までの距離 {:?}", near);
+        assert!(near.iter().all(|&d| d < 20.0), "海を渡って着いていない");
+        let _ = ship;
     }
 
     /// 靖康の変（1127年）：宋の北の城邑は金に、残りは南宋に。プレイヤーの宋は南宋を引き継ぐ

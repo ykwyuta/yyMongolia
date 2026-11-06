@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// これより近い目的地へは、陸続きなら船を使わない（マス）
+pub const FERRY_MIN_DIST: f32 = 30.0;
+
 impl World {
     /// 兵を船に乗せる命令（船の定員まで。船は岸の近くにいなければならない）
     pub fn order_board(&mut self, hs: &[Handle], ship: Handle) {
@@ -209,8 +212,8 @@ impl World {
     pub(super) fn update_ferry(&mut self, i: usize, goal: V2, attack: bool, dt: f32) {
         let pos = self.units[i].pos;
         let ni = self.units[i].nation;
-        // もう同じ陸にいれば、そのまま歩いて向かう
-        if self.same_land(pos, goal) {
+        // 目的地の近くまで来ていれば（陸続きで）、そのまま歩いて向かう
+        if self.same_land(pos, goal) && pos.dist(goal) < FERRY_MIN_DIST {
             let u = &mut self.units[i];
             u.order = if attack { Order::AttackMove(goal) } else { Order::Move(goal) };
             u.resume = None;
@@ -356,5 +359,88 @@ impl World {
             // 乗り場へ行けない（別の海）
             self.units[i].order = Order::Idle;
         }
+    }
+
+    /// 粗い升目の上の最短距離（マス）。たどり着けなければ None
+    fn coarse_dist(&self, cells: &[bool], a: V2, b: V2) -> Option<f32> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let cell = |p: V2| -> (i32, i32) { ((p.x as i32 / GCELL).clamp(0, GW - 1), (p.y as i32 / GCELL).clamp(0, GH - 1)) };
+        // 端が通れない升目（岸辺など）なら、隣の通れる升目から始める
+        let fix = |c: (i32, i32)| -> Option<(i32, i32)> {
+            for r in 0..3 {
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let (x, y) = (c.0 + dx, c.1 + dy);
+                        if x >= 0 && y >= 0 && x < GW && y < GH && cells[(y * GW + x) as usize] {
+                            return Some((x, y));
+                        }
+                    }
+                }
+            }
+            None
+        };
+        let s = fix(cell(a))?;
+        let t = fix(cell(b))?;
+        let n = (GW * GH) as usize;
+        let mut dist = vec![u32::MAX; n];
+        let mut heap = BinaryHeap::new();
+        let si = (s.1 * GW + s.0) as usize;
+        dist[si] = 0;
+        heap.push(Reverse((0u32, si)));
+        while let Some(Reverse((d, i))) = heap.pop() {
+            if d > dist[i] {
+                continue;
+            }
+            let (x, y) = ((i as i32) % GW, (i as i32) / GW);
+            if (x, y) == t {
+                return Some(d as f32 / 10.0 * GCELL as f32);
+            }
+            for (dx, dy, c) in [(1, 0, 10), (-1, 0, 10), (0, 1, 10), (0, -1, 10), (1, 1, 14), (1, -1, 14), (-1, 1, 14), (-1, -1, 14)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx < 0 || ny < 0 || nx >= GW || ny >= GH {
+                    continue;
+                }
+                let ni = (ny * GW + nx) as usize;
+                if !cells[ni] {
+                    continue;
+                }
+                let nd = d + c;
+                if nd < dist[ni] {
+                    dist[ni] = nd;
+                    heap.push(Reverse((nd, ni)));
+                }
+            }
+        }
+        None
+    }
+
+    /// 陸続きの目的地でも、海を回ったほうがずっと早いか（粗い升目でざっくり見積もる）。
+    /// 歩き（岸まで・岸から）＋船が迎えに来る道のり＋航海＋乗り降りの手間 と、陸路だけの時間を比べる
+    pub fn sea_is_faster(&self, n: usize, from: V2, goal: V2, speed: f32) -> bool {
+        if from.dist(goal) < FERRY_MIN_DIST {
+            return false;
+        }
+        let Some(embark) = self.shore_water_near(from, 10) else { return false };
+        let Some(landing) = self.landing_for(embark, goal).filter(|l| l.dist(goal) < 12.0) else { return false };
+        let land = match self.coarse_dist(&self.coarse_land, from, goal) {
+            Some(d) => d,
+            None => return true,
+        };
+        let Some(sail) = self.coarse_dist(&self.coarse_sea, embark, landing) else { return false };
+        // いちばん近い自国の船が乗り場まで来る道のり（まっすぐの距離をざっくり1.3倍）
+        let ship_to = self
+            .units
+            .iter()
+            .filter(|u| u.on_map() && u.kind.naval() && u.nation as usize == n && self.sea_at(u.pos) == self.sea_at(embark))
+            .map(|u| u.pos.dist(embark) * 1.3)
+            .fold(f32::MAX, f32::min);
+        if ship_to == f32::MAX {
+            return false;
+        }
+        let ship_speed = 2.6;
+        let t_land = land / speed;
+        let t_sea = (from.dist(embark) + landing.dist(goal)) / speed + (sail + ship_to) / ship_speed + 12.0;
+        t_sea < t_land * 0.75
     }
 }
