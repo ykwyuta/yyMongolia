@@ -42,6 +42,11 @@ impl World {
 
     /// 船の上の兵を、いまいる岸辺にすぐ降ろす（陸が近くになければ false）
     pub fn unload_here(&mut self, sh: Handle, then: Option<V2>) -> bool {
+        self.unload_here_ex(sh, then, true)
+    }
+
+    /// 兵を降ろす。attack が偽なら、降りた兵は目的地へ（戦わずに）進む
+    pub fn unload_here_ex(&mut self, sh: Handle, then: Option<V2>, attack: bool) -> bool {
         let Some(s) = self.unit(sh) else { return false };
         if s.cargo.is_empty() {
             return false;
@@ -57,9 +62,10 @@ impl World {
             if let Some(u) = self.unit_mut(h) {
                 u.aboard = None;
                 u.pos = p;
+                u.resume = None;
                 u.reset_nav();
                 u.order = match then {
-                    Some(g) if u.kind.military() => Order::AttackMove(g),
+                    Some(g) if u.kind.military() && attack => Order::AttackMove(g),
                     Some(g) => Order::Move(g),
                     None => Order::Idle,
                 };
@@ -96,57 +102,259 @@ impl World {
     }
 
     pub(super) fn update_unload(&mut self, i: usize, target: V2, dt: f32) {
-        if self.units[i].cargo.is_empty() {
+        if self.unload_step(i, target, true, dt) {
             self.units[i].order = Order::Idle;
+        }
+    }
+
+    /// 目的地の近くの岸へ向かい、着いたら兵を降ろす。降ろし終えたか、着けないと分かれば true
+    fn unload_step(&mut self, i: usize, target: V2, attack: bool, dt: f32) -> bool {
+        if self.units[i].cargo.is_empty() {
             self.units[i].resume = None;
-            return;
+            return true;
         }
         // 着ける岸辺（一度だけ求めて覚えておく）
         let landing = match self.units[i].resume {
             Some(p) => p,
-            None => {
-                let sea = self.sea_region[{
-                    let (x, y) = self.units[i].pos.tile();
-                    Map::idx(x.clamp(0, MAP_W as i32 - 1), y.clamp(0, MAP_H as i32 - 1))
-                }];
-                let mut best = None;
-                for r in [6, 12, 20] {
-                    if let Some(p) = self.shore_water_near(target, r) {
-                        let (x, y) = p.tile();
-                        if self.sea_region[Map::idx(x, y)] == sea {
-                            best = Some(p);
-                            break;
-                        }
-                    }
+            None => match self.landing_for(self.units[i].pos, target) {
+                Some(p) => {
+                    self.units[i].resume = Some(p);
+                    p
                 }
-                match best {
-                    Some(p) => {
-                        self.units[i].resume = Some(p);
-                        p
-                    }
-                    None => {
-                        self.units[i].order = Order::Idle;
-                        return;
-                    }
+                None => {
+                    // 着ける岸が無い：いまの岸に降ろせるなら降ろす
+                    let me = self.uh(i);
+                    self.unload_here_ex(me, None, attack);
+                    return true;
                 }
-            }
+            },
         };
         let pos = self.units[i].pos;
         let near_land = !self.land_near(pos, 1).is_empty();
         if (pos.dist(landing) <= 1.2 || (pos.dist(landing) < 4.0 && near_land)) && near_land {
             let me = self.uh(i);
-            self.unload_here(me, Some(target));
+            self.unload_here_ex(me, Some(target), attack);
+            self.units[i].resume = None;
+            return true;
+        }
+        if self.nav(i, landing, 0.6, dt) {
+            let me = self.uh(i);
+            self.unload_here_ex(me, Some(target), attack);
+            self.units[i].resume = None;
+            return true;
+        }
+        false
+    }
+
+    /// 船が from の海から target の近くへ着ける岸辺の水のマス
+    fn landing_for(&self, from: V2, target: V2) -> Option<V2> {
+        let sea = self.sea_at(from)?;
+        for r in [6, 12, 20, 30] {
+            if let Some(p) = self.shore_water_near(target, r) {
+                if self.sea_at(p) == Some(sea) {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    /// その地点（またはすぐ近く）の海の番号
+    fn sea_at(&self, p: V2) -> Option<u32> {
+        let (cx, cy) = p.tile();
+        for r in 0..3i32 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if Map::inb(x, y) {
+                        let c = self.sea_region[Map::idx(x, y)];
+                        if c != u32::MAX {
+                            return Some(c);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 自国に（地図の上の）船があるか
+    pub fn has_ships(&self, n: usize) -> bool {
+        self.units.iter().any(|u| u.on_map() && u.kind.naval() && u.nation as usize == n)
+    }
+
+    /// 船を待つ兵の乗り場：近くの岸辺のうち、目的地の側の岸と同じ海につながる所
+    fn embark_for(&self, pos: V2, goal: V2) -> Option<V2> {
+        let want = self.landing_for_any(goal)?;
+        for r in [6, 12, 20, 30] {
+            if let Some(p) = self.shore_water_near(pos, r) {
+                if self.sea_at(p).is_some() && self.sea_at(p) == self.sea_at(want) {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    fn landing_for_any(&self, goal: V2) -> Option<V2> {
+        for r in [6, 12, 20, 30] {
+            if let Some(p) = self.shore_water_near(goal, r) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// 海の向こうへ行く兵：岸の乗り場で待ち、迎えに来た船に乗る
+    pub(super) fn update_ferry(&mut self, i: usize, goal: V2, attack: bool, dt: f32) {
+        let pos = self.units[i].pos;
+        let ni = self.units[i].nation;
+        // もう同じ陸にいれば、そのまま歩いて向かう
+        if self.same_land(pos, goal) {
+            let u = &mut self.units[i];
+            u.order = if attack { Order::AttackMove(goal) } else { Order::Move(goal) };
+            u.resume = None;
+            u.reset_nav();
+            return;
+        }
+        if !self.has_ships(ni as usize) {
             self.units[i].order = Order::Idle;
             self.units[i].resume = None;
             return;
         }
-        if self.nav(i, landing, 0.6, dt) {
+        let embark = match self.units[i].resume {
+            Some(p) => p,
+            None => match self.embark_for(pos, goal) {
+                Some(p) => {
+                    self.units[i].resume = Some(p);
+                    p
+                }
+                None => {
+                    self.units[i].order = Order::Idle;
+                    return;
+                }
+            },
+        };
+        // 迎えの船がそばにいれば乗る
+        let ship = (0..self.units.len()).find(|&k| {
+            let s = &self.units[k];
+            s.on_map() && s.kind.naval() && s.nation == ni && s.cargo.len() < SHIP_CAP && s.pos.dist(pos) <= 2.6 && matches!(s.order, Order::Shuttle(g, _) if g.dist(goal) < 4.0)
+        });
+        if let Some(k) = ship {
+            let sh = self.uh(k);
             let me = self.uh(i);
-            if !self.unload_here(me, Some(target)) {
-                self.units[i].order = Order::Idle;
+            let u = &mut self.units[i];
+            u.aboard = Some(sh);
+            u.selected = false;
+            u.path.clear();
+            u.carry = 0.0;
+            // 乗っている間も目的地を覚えておく（降りるとき船が目的地へ向かわせる）
+            u.order = Order::Ferry(goal, attack);
+            self.units[k].cargo.push(me);
+            return;
+        }
+        // 乗り場のそばの陸で待つ
+        let stand = self.land_near(embark, 1).first().copied().unwrap_or(pos);
+        if pos.dist(stand) > 0.8 {
+            self.nav(i, stand, 0.6, dt);
+        }
+    }
+
+    /// 船を待つ兵のいる目的地へ、手の空いた船を割り当てる（0.25秒ごと）
+    pub(super) fn assign_ferries(&mut self) {
+        // 待っている兵（国, 目的地, 攻撃か, 位置）
+        let waiting: Vec<(u8, V2, bool, V2)> = self
+            .units
+            .iter()
+            .filter(|u| u.on_map() && !u.kind.naval())
+            .filter_map(|u| match u.order {
+                Order::Ferry(g, a) => Some((u.nation, g, a, u.pos)),
+                _ => None,
+            })
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        for k in 0..self.units.len() {
+            let s = &self.units[k];
+            if !s.on_map() || !s.kind.naval() || s.order != Order::Idle || !s.cargo.is_empty() {
+                continue;
             }
+            let (n, sp) = (s.nation, s.pos);
+            // 目的地ごとに、待つ兵の数と、既に向かっている船の空きを比べ、足りない所へ
+            let mut best: Option<(f32, V2, bool)> = None;
+            for &(wn, g, a, p) in waiting.iter().filter(|w| w.0 == n) {
+                let need = waiting.iter().filter(|w| w.0 == n && w.1.dist(g) < 4.0).count();
+                let room: usize = self
+                    .units
+                    .iter()
+                    .filter(|x| x.on_map() && x.kind.naval() && x.nation == wn && matches!(x.order, Order::Shuttle(g2, _) if g2.dist(g) < 4.0))
+                    .map(|x| SHIP_CAP - x.cargo.len().min(SHIP_CAP))
+                    .sum();
+                if need <= room {
+                    continue;
+                }
+                let d = p.dist(sp);
+                if best.map_or(true, |b| d < b.0) {
+                    best = Some((d, g, a));
+                }
+            }
+            if let Some((_, g, a)) = best {
+                let s = &mut self.units[k];
+                s.order = Order::Shuttle(g, a);
+                s.resume = None;
+                s.carry = 0.0;
+                s.reset_nav();
+            }
+        }
+    }
+
+    /// 往復輸送の船：待つ兵を迎えに行き、乗せたら向こう岸で降ろし、また戻る
+    pub(super) fn update_shuttle(&mut self, i: usize, goal: V2, attack: bool, dt: f32) {
+        let ni = self.units[i].nation;
+        let pos = self.units[i].pos;
+        // まだ岸で待っている、同じ目的地の兵
+        let waiting: Vec<(V2, Option<V2>)> = self
+            .units
+            .iter()
+            .filter(|u| u.on_map() && u.nation == ni && !u.kind.naval() && matches!(u.order, Order::Ferry(g, _) if g.dist(goal) < 4.0))
+            .map(|u| (u.pos, u.resume))
+            .collect();
+        let cargo = self.units[i].cargo.len();
+        if cargo > 0 {
+            // 満員になるか、近くに乗る兵がいなくなるか、しばらく待ったら出航する
+            let near = waiting.iter().filter(|w| w.0.dist(pos) < 8.0).count();
+            let sailing = self.units[i].resume.is_some();
+            if !sailing && cargo < SHIP_CAP && near > 0 && self.units[i].carry < 8.0 {
+                self.units[i].carry += dt;
+                return;
+            }
+            if self.unload_step(i, goal, attack, dt) {
+                self.units[i].carry = 0.0;
+                self.units[i].resume = None;
+            }
+            return;
+        }
+        self.units[i].carry = 0.0;
+        if waiting.is_empty() {
             self.units[i].order = Order::Idle;
             self.units[i].resume = None;
+            return;
+        }
+        // いちばん近い兵のいる岸へ迎えに行く（兵が乗り場から少しずれていても、その兵の目の前の水へ）
+        let (_, wp, emb) = waiting
+            .iter()
+            .map(|w| (w.0.dist(pos), w.0, w.1.unwrap_or(w.0)))
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .unwrap();
+        let my_sea = self.sea_at(pos);
+        let pick = self
+            .shore_water_near(wp, 3)
+            .filter(|&q| self.sea_at(q) == my_sea)
+            .unwrap_or(if self.passable_l(emb, true) { emb } else { self.shore_water_near(emb, 6).unwrap_or(emb) });
+        if pos.dist(pick) > 1.0 && self.nav(i, pick, 0.8, dt) && pos.dist(pick) > 6.0 {
+            // 乗り場へ行けない（別の海）
+            self.units[i].order = Order::Idle;
         }
     }
 }

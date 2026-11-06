@@ -277,6 +277,10 @@ pub enum Order {
     Board(Handle),
     /// 船：この地点の近くの岸へ行き、乗せた兵を降ろす
     Unload(V2),
+    /// 海の向こうへ：岸で船を待ち、船で渡ってから目的地へ（目的地, 攻撃移動か）
+    Ferry(V2, bool),
+    /// 船：海の向こうへ向かう兵を、岸と岸の間で往復して運ぶ（目的地, 攻撃移動か）
+    Shuttle(V2, bool),
 }
 
 pub struct Unit {
@@ -1373,11 +1377,20 @@ impl World {
             if !self.passable_l(g, naval) {
                 g = goal;
             }
+            // 海の向こうへは、自国に船があれば船で渡る（岸で待てば船が迎えに来る）
+            let ferry = self.unit(h).map_or(false, |u| !u.kind.naval() && u.aboard.is_none() && !self.same_land(u.pos, g) && self.has_ships(u.nation as usize));
             if let Some(u) = self.unit_mut(h) {
                 if u.aboard.is_some() {
                     continue;
                 }
-                u.order = if attack && u.kind.military() { Order::AttackMove(g) } else { Order::Move(g) };
+                let atk = attack && u.kind.military();
+                u.order = if ferry {
+                    Order::Ferry(g, atk)
+                } else if atk {
+                    Order::AttackMove(g)
+                } else {
+                    Order::Move(g)
+                };
                 u.resume = None;
                 u.build_queue.clear();
                 u.reset_nav();
@@ -1387,12 +1400,18 @@ impl World {
 
     pub fn order_attack(&mut self, hs: &[Handle], t: Target) {
         self.note_player_order(hs);
+        let tp = self.target_info(t).map(|x| x.0);
         for &h in hs {
+            // 海の向こうの敵へは、船があれば船で渡ってから攻めかかる
+            let ferry = match (tp, self.unit(h)) {
+                (Some(p), Some(u)) => !u.kind.naval() && u.aboard.is_none() && !self.same_land(u.pos, p) && self.has_ships(u.nation as usize),
+                _ => false,
+            };
             if let Some(u) = self.unit_mut(h) {
                 if u.aboard.is_some() {
                     continue;
                 }
-                u.order = Order::Attack(t);
+                u.order = if ferry { Order::Ferry(tp.unwrap(), true) } else { Order::Attack(t) };
                 u.resume = None;
                 u.build_queue.clear();
                 u.reset_nav();
@@ -2000,6 +2019,7 @@ impl World {
         if self.stat_t <= 0.0 {
             self.stat_t = 0.25;
             self.update_stats();
+            self.assign_ferries();
         }
         self.economy(dt);
         self.update_trade(dt);
@@ -2587,6 +2607,8 @@ impl World {
             Order::Gather { src, phase } => self.update_gather(i, src, phase, dt),
             Order::Board(sh) => self.update_board(i, sh, dt),
             Order::Unload(target) => self.update_unload(i, target, dt),
+            Order::Ferry(goal, attack) => self.update_ferry(i, goal, attack, dt),
+            Order::Shuttle(goal, attack) => self.update_shuttle(i, goal, attack, dt),
             Order::Build(bh) => {
                 let Some(b) = self.bld(bh) else {
                     if !self.next_queued_build(i) {
@@ -3286,6 +3308,47 @@ mod tests {
         for p in landed {
             assert!(w.same_land(p, target), "大陸に上陸していない");
         }
+    }
+
+    /// 自動の渡海：海の向こうへ移動を命じると、兵は岸で待ち、船が往復して全員を運ぶ（船1隻・兵8人）
+    #[test]
+    fn ferry_round_trip() {
+        let mut w = World::new(12345);
+        let n = JAPAN;
+        w.player = n;
+        let dz = w.blds.iter().find(|b| b.alive && b.nation as usize == n && b.kind == BKind::Town && tile_to_ll(b.center().x, b.center().y).0 < 132.0).unwrap().center();
+        // 九州の岸辺に船を1隻置く
+        let water = w.shore_water_near(dz, 14).expect("岸が無い");
+        let ship = w.spawn_unit(n, 23, water, 1.0);
+        let land = w.land_near(dz, 3);
+        let troops: Vec<Handle> = (0..8).map(|k| w.spawn_unit(n, 20, land[k % land.len()], 1.0)).collect();
+        let target = w.blds.iter().filter(|b| b.alive && b.nation as usize == GORYEO && b.kind.city()).map(|b| b.center()).min_by(|a, b| a.dist(dz).partial_cmp(&b.dist(dz)).unwrap()).unwrap();
+        assert!(!w.same_land(dz, target));
+        // ふつうの移動命令だけで渡る
+        w.order_move(&troops, target, false);
+        assert!(troops.iter().all(|&h| matches!(w.unit(h).unwrap().order, Order::Ferry(..))));
+        let mut trips = 0;
+        let mut was_loaded = false;
+        for _ in 0..(400.0 / DT) as usize {
+            w.step();
+            let loaded = w.unit(ship).map_or(false, |s| !s.cargo.is_empty());
+            if was_loaded && !loaded {
+                trips += 1;
+            }
+            was_loaded = loaded;
+            if troops.iter().all(|&h| w.unit(h).map_or(true, |u| u.aboard.is_none() && w.same_land(u.pos, target))) {
+                break;
+            }
+        }
+        let over: Vec<bool> = troops.iter().map(|&h| w.unit(h).map_or(false, |u| u.aboard.is_none() && w.same_land(u.pos, target))).collect();
+        println!("渡った兵 {:?} 往復 {}", over, trips);
+        assert!(over.iter().all(|&b| b), "全員が渡っていない");
+        assert!(trips >= 2, "往復していない");
+        // 運び終えた船は待機に戻る
+        for _ in 0..60 {
+            w.step();
+        }
+        assert_eq!(w.unit(ship).unwrap().order, Order::Idle);
     }
 
     /// 靖康の変（1127年）：宋の北の城邑は金に、残りは南宋に。プレイヤーの宋は南宋を引き継ぐ

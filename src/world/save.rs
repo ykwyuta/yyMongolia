@@ -178,6 +178,16 @@ fn w_order(w: &mut Writer, o: Order) {
             w.u8(7);
             w_v2(w, p);
         }
+        Order::Ferry(p, a) => {
+            w.u8(8);
+            w_v2(w, p);
+            w.bool(a);
+        }
+        Order::Shuttle(p, a) => {
+            w.u8(9);
+            w_v2(w, p);
+            w.bool(a);
+        }
     }
 }
 fn r_order(r: &mut Reader, mines: usize) -> RResult<Order> {
@@ -204,6 +214,8 @@ fn r_order(r: &mut Reader, mines: usize) -> RResult<Order> {
         5 => Order::Build(r_h(r)?),
         6 => Order::Board(r_h(r)?),
         7 => Order::Unload(r_v2(r)?),
+        8 => Order::Ferry(r_v2(r)?, r.bool()?),
+        9 => Order::Shuttle(r_v2(r)?, r.bool()?),
         _ => return Err(bad(t!("命令", "order", "命令"))),
     })
 }
