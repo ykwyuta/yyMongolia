@@ -219,7 +219,7 @@ impl World {
     }
 
     /// 船が from の海から target の近くへ着ける岸辺の水のマス
-    fn landing_for(&self, from: V2, target: V2) -> Option<V2> {
+    pub(crate) fn landing_for(&self, from: V2, target: V2) -> Option<V2> {
         let sea = self.sea_at(from)?;
         for r in [6, 12, 20, 30] {
             if let Some(p) = self.shore_water_near(target, r) {
