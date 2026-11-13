@@ -1,6 +1,7 @@
 //! 画面・入力・HUD（独自実装の UI）
 
 mod chronicle;
+mod corps;
 mod heroes;
 mod market;
 mod mobile;
@@ -108,6 +109,10 @@ enum Act {
     AllWorkersMine,
     AllWorkersUpgrade,
     ArmyDefend,
+    ToggleCorps,
+    FormCorps,
+    SelectCorps(usize),
+    DisbandCorps,
     AllArmyAttack,
     AllArmyDefend,
     AllArmyUpgrade,
@@ -209,6 +214,9 @@ pub struct Game {
     sel: Vec<Handle>,
     sel_b: Vec<Handle>,
     groups: Vec<Vec<Handle>>,
+    corps: [Vec<Handle>; corps::CORPS_SLOTS],
+    active_corps: Option<usize>,
+    show_corps: bool,
     speed: u32,
     paused: bool,
     /// 部隊を選んでから命令するまでの一時停止
@@ -364,6 +372,9 @@ impl Game {
             sel: Vec::new(),
             sel_b: Vec::new(),
             groups: vec![Vec::new(); 10],
+            corps: Default::default(),
+            active_corps: None,
+            show_corps: false,
             speed: 1,
             paused: false,
             acc: 0.0,
@@ -807,6 +818,7 @@ impl Game {
             let pl = self.world.player;
             let sel: Vec<Handle> = self.sel.iter().copied().filter(|&h| self.world.unit(h).map_or(false, |u| u.nation as usize == pl || self.seen(u.pos))).collect();
             self.sel = sel;
+            self.prune_corps();
             let barracks_group = self.sel_b.len() > 1;
             self.sel_b.retain(|&h| {
                 self.world.bld(h).is_some_and(|b| !barracks_group || b.nation as usize == pl)
@@ -1088,8 +1100,12 @@ impl Game {
                             Mode::PlantForest(_) => self.ldown = Some((x, y)),
                             Mode::AttackMove => {
                                 let p = self.screen_to_world(x, y);
-                                let hs = self.own_sel();
-                                self.world.order_move(&hs, p, true);
+                                if self.active_corps.is_some() {
+                                    self.order_corps_advance(p);
+                                } else {
+                                    let hs = self.own_sel();
+                                    self.world.order_move(&hs, p, true);
+                                }
                                 self.marker = Some((p, 0.6, true));
                                 self.mode = Mode::Normal;
                                 if let Some(t) = &mut self.tut {
@@ -1229,6 +1245,8 @@ impl Game {
             VK_ESCAPE => {
                 if self.mode != Mode::Normal {
                     self.mode = Mode::Normal;
+                } else if self.show_corps {
+                    self.show_corps = false;
                 } else if self.world.banner.is_some() && !self.overlay_open() {
                     // 出来事の告知を閉じる
                     self.world.dismiss_banner();
@@ -1279,6 +1297,8 @@ impl Game {
 
     fn clear_sel(&mut self) {
         self.discard_pending = false;
+        self.active_corps = None;
+        self.show_corps = false;
         for h in self.sel.drain(..) {
             if let Some(u) = self.world.unit_mut(h) {
                 u.selected = false;
@@ -1509,7 +1529,7 @@ impl Game {
     }
 
     /// 軍事ユニットに領内防衛・侵入者迎撃・城邑集結を命じる
-    fn order_army_defend(&mut self, hs: &[Handle]) {
+    fn order_army_defend(&mut self, hs: &[Handle], as_corps: bool) {
         if hs.is_empty() {
             self.notice(t!("軍事ユニットがいない", "No soldiers", "没有军事单位"));
             return;
@@ -1529,7 +1549,11 @@ impl Game {
             }
         }
         if let Some(p) = intruder {
-            self.world.order_move(hs, p, true);
+            if as_corps {
+                self.move_corps(hs, p);
+            } else {
+                self.world.order_move(hs, p, true);
+            }
             self.marker = Some((p, 0.6, true));
             self.notice(&tf!("{}部隊に領内侵入者の迎撃を命じた", "Ordered {} units to intercept intruders", "命令{}个单位迎击入侵者", hs.len()));
             if let Some(t) = &mut self.tut {
@@ -1544,7 +1568,24 @@ impl Game {
             .filter(|b| b.alive && b.nation as usize == pl && b.kind.city() && b.done())
             .map(|b| b.center())
             .collect();
-        let rally = if cities.is_empty() {
+        let rally = if as_corps {
+            let mut center = v2(0.0, 0.0);
+            for &h in hs {
+                center = center + self.world.unit(h).unwrap().pos;
+            }
+            center = center * (1.0 / hs.len() as f32);
+            let city = cities.iter().copied().min_by(|a, b| a.dist(center).total_cmp(&b.dist(center)));
+            let goal = city.map_or(home, |c| {
+                [v2(2.2, 0.0), v2(-2.2, 0.0), v2(0.0, 2.2), v2(0.0, -2.2)]
+                    .into_iter()
+                    .map(|off| c + off)
+                    .filter(|&p| self.world.passable_at(p))
+                    .min_by(|a, b| a.dist(center).total_cmp(&b.dist(center)))
+                    .unwrap_or(c)
+            });
+            self.move_corps(hs, goal);
+            goal
+        } else if cities.is_empty() {
             home
         } else {
             // 各部隊から最も近い自国城邑へ帰還・防衛配置
@@ -2064,6 +2105,7 @@ impl Game {
                 self.screen = Screen::Title;
                 self.title_sel = None;
                 self.clear_sel();
+                self.reset_corps();
                 self.show_diplo = false;
                 self.show_help = false;
                 self.show_chron = false;
@@ -2172,7 +2214,11 @@ impl Game {
             }
             Act::AttackMove => {
                 if !self.own_sel().is_empty() {
+                    self.show_corps = false;
                     self.mode = Mode::AttackMove;
+                    if self.active_corps.is_some() {
+                        self.notice(t!("軍団の進軍先を地図上で指定してください", "Choose where the corps should advance", "请在地图上选择军团进军的目标"));
+                    }
                 }
             }
             Act::SelectAllWorkers => {
@@ -2243,15 +2289,26 @@ impl Game {
                 }
             }
             Act::ArmyDefend => {
-                let hs: Vec<Handle> = self.own_sel().into_iter().filter(|&h| self.world.unit(h).map_or(false, |u| u.kind.military())).collect();
-                self.order_army_defend(&hs);
+                let hs = self.selected_soldiers();
+                self.mode = Mode::Normal;
+                self.show_corps = false;
+                self.order_army_defend(&hs, self.active_corps.is_some());
             }
+            Act::ToggleCorps if self.corps_controls_available() => {
+                self.mode = Mode::Normal;
+                self.ldown = None;
+                self.show_corps = !self.show_corps;
+            }
+            Act::FormCorps if self.corps_controls_available() && self.show_corps => self.form_corps(),
+            Act::SelectCorps(slot) if self.corps_controls_available() && self.show_corps => self.select_corps(slot),
+            Act::DisbandCorps if self.corps_controls_available() && self.show_corps => self.disband_corps(),
+            Act::ToggleCorps | Act::FormCorps | Act::SelectCorps(_) | Act::DisbandCorps => {}
             Act::AllArmyAttack => {
                 self.order_all_army_attack();
             }
             Act::AllArmyDefend => {
                 let hs = self.all_military();
-                self.order_army_defend(&hs);
+                self.order_army_defend(&hs, false);
             }
             Act::AllArmyUpgrade => {
                 let hs = self.all_military();
@@ -3705,17 +3762,39 @@ impl Game {
         let iw = w - ix - 394.0;
         self.art.draw_inset_box(&self.gfx, ix, py + 6.0, ix + iw, h - 4.0);
         self.art.draw_corner_ornaments(&self.gfx, ix + 2.0, py + 8.0, ix + iw - 2.0, h - 6.0, 11.0);
-        self.render_info(ix + 12.0, py + 12.0, iw - 24.0);
+        let corps_available = self.corps_controls_available();
+        if !corps_available {
+            self.show_corps = false;
+        }
+        if self.show_corps {
+            self.render_corps(ix + 12.0, py + 12.0, iw - 24.0);
+        } else {
+            self.render_info(ix + 12.0, py + 12.0, iw - 24.0);
+        }
         // 英霊モード：民を選んでいれば英霊召喚ボタン
-        if self.world.heroic && self.own_sel().iter().any(|&h| self.world.unit(h).map_or(false, |u| u.kind == UnitKind::Worker)) {
+        if !self.show_corps && self.world.heroic && self.own_sel().iter().any(|&h| self.world.unit(h).map_or(false, |u| u.kind == UnitKind::Worker)) {
             let tip = if self.world.hero_of(pl).is_some() { t!("英霊は一国に一体だけ。いまの英霊が倒れれば、また呼べる", "Only one spirit per state. If yours falls, you can summon again", "每国只能有一位英灵。现有英灵倒下后可再次召唤") } else { t!("選んだ民を生贄に捧げ、三皇五帝から春秋戦国の英霊を呼ぶ（英霊の能力＝生贄の能力の合計×1.1〜3.0）", "Sacrifice the selected workers to summon a spirit from the Three Sovereigns to the Warring States (spirit power = total sacrificed power × 1.1–3.0)", "献祭所选的民，召唤自三皇五帝至春秋战国的英灵（英灵能力＝祭品能力总和×1.1〜3.0）") };
             self.add_button(ix + iw - 176.0, h - 58.0, ix + iw - 14.0, h - 14.0, t!("英霊召喚", "Summon Spirit", "召唤英灵"), t!("民を生贄に", "sacrifice workers", "献祭民"), 'H' as u32, self.world.hero_of(pl).is_none(), Act::Summon, tip);
         }
 
         // スマートフォン：選択や建設場所選びを指で解く ✕
-        if self.gfx.compact && (self.mode != Mode::Normal || !self.sel.is_empty() || !self.sel_b.is_empty()) {
+        if !self.show_corps && self.gfx.compact && (self.mode != Mode::Normal || !self.sel.is_empty() || !self.sel_b.is_empty()) {
             let tip = if self.mode != Mode::Normal { t!("取り消す", "Cancel", "取消") } else { t!("選択を解く", "Deselect", "取消选择") };
             self.add_button(ix + iw - 46.0, py + 10.0, ix + iw - 8.0, py + 48.0, "✕", "", 0, true, Act::Cancel, tip);
+        }
+
+        if corps_available {
+            let label = if self.show_corps {
+                t!("閉じる", "Close", "关闭").to_string()
+            } else if let Some(slot) = self.active_corps {
+                tf!("第{}軍団", "Corps {}", "第{}军团", slot + 1)
+            } else {
+                t!("軍団", "Corps", "军团").to_string()
+            };
+            let button_x = if self.show_corps { ix + iw - 104.0 } else { ix + 12.0 };
+            let button_y = if self.show_corps { py + 8.0 } else { h - 46.0 };
+            self.add_button(button_x, button_y, button_x + 92.0, button_y + 34.0, &label, "", 'J' as u32, true, Act::ToggleCorps,
+                t!("軍団の編成・呼び出し・解散（J）", "Form, recall, or disband corps (J)", "组建、召回或解散军团（J）"));
         }
 
         // 右側のコマンド欄ボックス
@@ -4461,9 +4540,9 @@ impl Game {
         self.add_button(x0 + pw - 90.0, y0 + 10.0, x0 + pw - 14.0, y0 + 40.0, t!("閉じる", "Close", "关闭"), "", 0, true, Act::CloseOverlay, "");
         self.art.draw_inset_box(&self.gfx, x0 + 14.0, y0 + 46.0, x0 + pw - 14.0, y0 + ph - 14.0);
         let text = t!(
-            "■ 目的　1294年（クビライの死の年）までにユーラシアを統一せよ。始まりは1115年（金の建国）。時間は全ての国で共通に流れ（群雄割拠の時代は1年＝24秒、1206年の大モンゴル国の成立からは時間がゆっくり流れ1年＝48秒）、どの国も同じ時代補正を受ける。\n\n■ 資源　糧（田を耕す）・木（森を伐採）・鉄（鉱山を採掘）。民が集めて都・邑へ運ぶ。城邑からも少しずつ税収がある。\n\n■ ユニット　動かせる数には上限がある（城邑の数で増える）。その代わり「訓練／教化」で一体ごとの能力を高められる（時代ごとに上限あり。費用は糧・木・鉄のうち蓄えの多いものから優先して払う）。軍事ユニットは存在するだけで糧を消費する（維持費）。糧が尽きると兵は弱っていく。兵を解散して民に、民を徴兵して歩兵にできるが、能力は2/3に目減りする。\n　歩兵（槍）＞騎兵＞弓兵＞歩兵 の相性がある。騎射兵（モンゴルの騎射兵・日本の騎馬武者・マムルークなど）は騎兵でありながら遠くから射る。\n■ 国ごとの兵種　作れる兵は国によって違う（モンゴルのケシク、宋の火槍兵・神臂弓兵、金の鉄浮屠、西夏の潑喜、日本の武士・騎馬武者、エジプトのマムルーク、ビザンツのヴァリャーグ親衛隊、ポーランド・ハンガリーの騎士など）。兵営のボタンにマウスを重ねると強さが分かる。\n■ 服属　他国が築いた城邑を攻め落として領すると、その国が服属したことになり、その国の兵も兵営で作れる（ボタンの名前に＊が付く）。高麗・宋・南宋・日本の城邑を領すれば、船も造れる。\n■ 船と海　海を渡るには船が要る。船を造れるのは日本・高麗・宋・南宋だけ（またはそれらの城邑を服属させた国）。民で「港」を海辺に建て、港で船を造る。海の向こうへ移動・攻撃を命じるだけで、兵は近くの岸で待ち、手の空いた船が自動で往復して運ぶ（1隻に6人）。陸続きでも、海を回ったほうがずっと早ければ船を使う。自分で乗せるときは、兵を選んで船を右クリックすると乗り込む（兵と船をいくつか一緒に選んで船を右クリックするか「まとめて乗船」を押すと、空きのある船に分かれて乗る）。船を選んで陸を右クリックすると、その近くの岸へ向かって兵を降ろす（「上陸」ボタンでいまの岸に降ろす）。船は遠くから矢を射て戦い、沈むと乗っていた兵も失われる。日本の近海では神風（1274年・1281年）に注意。\n■ 邑の破壊　自国の邑（都以外）を選ぶと「邑を焼き払う」で破壊でき、戦利品（糧・木・鉄）を得る。他国が築いた邑ほど多く得られるが、領土と人口上限は減り、周りの国の警戒も高まる。モンゴルなどの遊牧国家は、攻め落とした邑を焼き払うことがある。\n\n■ 外交　F2で外交画面。宣戦しないと他国を攻撃できない。城邑を攻め落とすと自国のものになる。全ての城邑を失った国は滅亡する。\n■ 和睦の申し入れ　交戦国からの和睦の申し入れには「受諾（Y）」か「拒否（N）」で答える。答えるまで時間は止まる。\n■ 反〇〇同盟　国境を接する国（領土が接するか、城邑が近い国）が結ぶ同盟で、15年間ともに攻めてくる。群雄割拠の時代は、宣戦や攻略を繰り返して「隣国の警戒」が100に達した国が狙われる。大モンゴル国の時代は、突出して強くなった国が狙われる（たとえば反モンゴル同盟）。海の向こうの国は、船を造れる場合だけ加わる。\n■ 滅亡と人口上限　国が滅ぶと、その国の民・兵の上限が生き残った国に分けられる（攻め滅ぼした国が優先）。服属（併合）した国の上限はそのまま引き継ぐ。\n■ 要塞　民だけを選ぶと「要塞（R）」で築ける（糧300・木400・鉄300）。近づく敵兵を射る（射程9）。数は「1＋城邑の数÷2」まで（最大6）。\n\n■ 史実の出来事　史実の年になると、英雄・名将・名君が現れて国を強くし、反乱や簒奪で兵や蓄えを失い君主家が変わる。宋は初めは世界一の富強国だが、1127年の靖康の変で北を金に奪われて南宋となり、やがてモンゴルに追い詰められる。モンゴルは初めは小さな部族連合だが、テムジンの登場（1189年）、タタル・ケレイト・ナイマン・メルキトの服属、チンギス・カンの即位（1206年）で強大になる。その国が滅んでいれば起こらない。記録は「史記」（F3）で見られる。\n■ テングリの降臨　1294年までにユーラシアを統一できなければ、永遠の蒼き天（テングリ）がモンゴルに降臨する（モンゴルが滅んでいてもカラコルムに蘇る）。天の軍には抗えず、10年のうちにユーラシアはモンゴルに統一され、ゲームは終わる。\n■ 英霊モード（タイトル画面で選ぶ。既定はオフ）　民を選んで「英霊召喚」（H）を押すと、選んだ民を生贄に捧げて、モンゴル帝国の時代に各国に実在した将軍・帝王（チンギス・カン、スブタイ、岳飛、北条時宗、源義経、サラディン、バイバルス、アレクサンドル・ネフスキーなど）の英霊を国を超えて呼べる。英霊の能力は生贄の能力の合計の1.1〜3.0倍。一国が同時に従えられる英霊は一体だけで、同じ英霊は二国に現れない。他国も召喚する。英霊だけが天の兵を傷つけられ、英霊の近くの城邑は天の軍にも奪われない。降臨から10年後、自国の版図が天のモンゴルより広ければ勝利。\n■ 国の特徴　国ごとに史実に基づく特徴がある（タイトル画面と史記で確認できる）。アッバース朝は1258年までは滅びない（最後の城邑を落とされても攻め手は兵を引く）。\n■ 交易（F4）　国に属さない商人が諸国を巡り、生産力の高い国ほど多く集まる。商人は領内を通るだけで税（銭）を納める。税率は軽いほど商人が集まる。銭は市場で糧・木・鉄に換えられる。遠方の商人は海の道（江南・華南）・インドの道・地中海の道・琥珀の道（バルト）の先の地域にだけ来て、多くの税を落とす。\n■ 山岳民・遊牧民　オイラト・キルギス・トルクメン・ニザール派・ベドウィン・リトアニアなどは国ではない。守りの薄い国へ略奪に来たり、商いに来たりする。交易画面から銭で傭兵に雇え、雇った部族はその間その国を襲わない。\n■ 指揮中は時が止まる　自国の部隊を選ぶと時間が止まり、命令を出すと（または選択を解くと）再び進む。\n■ 戦場の霧　自国の民・兵・建物の周囲しか見えない。一度見た土地は暗く残る。諸国の都の所在だけは初めから分かっている。\n\n■ 操作\n　左クリック：選択　ドラッグ：範囲選択　ダブルクリック：同種を全選択（完成済みの兵営も画面内で一括選択・生産）　Shift：追加選択\n　右クリック：移動／攻撃／採集（森・鉱山・田）／建設の手伝い／乗船（兵で船を）／上陸（船で陸を）　建物選択中の右クリック：集合地点\n　A：進軍（攻撃移動）　S：停止　T：訓練・教化　C：兵⇔民の転換（船は上陸）　Q/W/E…：建設・訓練\n　Ctrl を押しながら建物を置く：建設の予約（続けて置ける）\n　Ctrl+数字：部隊登録　数字：部隊呼び出し　.：待機中の民　Home：国都へ\n　ホイール：拡大縮小　中ボタンドラッグ・矢印キー・画面端：スクロール　ミニマップクリック：移動\n　Space：一時停止　＋／－：速度　Esc：告知を閉じる・取り消し　F5：記録（セーブ・ロード）　F11：全画面　Ctrl＋＋／Ctrl＋−：文字の大きさ",
-            "■ Goal  Unify Eurasia by 1294, the year Kublai dies. The game begins in 1115 with the founding of the Jin. Time flows the same for every state (in the age of rival powers 1 year = 24 s; from the founding of the Great Mongol State in 1206 time slows to 1 year = 48 s), and every state gets the same era bonus.\n\n■ Resources  Food (farm fields), wood (cut forests), iron (mine). Workers carry them to the capital or a town. Cities also pay a little tax.\n\n■ Units  The number you can field is limited (more cities raise it). Instead, Train / Educate raises each unit's power (capped per era; the cost is paid mostly from whichever of food, wood and iron you have most of). Soldiers eat food just by existing (upkeep); without food they weaken. Soldiers can be disbanded into workers and workers drafted as infantry, but power drops to 2/3.\n  Counters: infantry (spears) > cavalry > archers > infantry. Horse archers (Mongol horse archers, Japanese mounted samurai, Mamluks...) are cavalry that shoot from range.\n■ National units  Each state fields different troops (the Mongol Keshig, Song fire lances and divine-arm crossbows, Jin iron pagoda cavalry, the Xia camel catapults, Japanese samurai, Egyptian Mamluks, the Byzantine Varangian Guard, Polish and Hungarian knights...). Hover over a barracks button to see a unit's strength.\n■ Subject states  Take and hold a city founded by another state and that state becomes your subject: its units can be trained at your barracks too (marked with *). Hold a city of Goryeo, Song, the Southern Song or Japan and you can build ships as well.\n■ Ships and the sea  Crossing the sea needs ships, and only Japan, Goryeo, Song and the Southern Song can build them (or states holding one of their cities). Build a Harbor on the coast with workers and build ships there. Just order troops to move or attack across the sea: they wait on the nearest shore and free ships automatically ferry them back and forth (6 per ship). Even over land, they take ships when going round by sea is much faster. To load them yourself, select troops and right-click a ship (select several troops and ships together and right-click a ship, or press Board all, to spread them over the ships with room). Select a ship and right-click land to sail to the nearest shore and land the troops (or press Land troops to land them where you are). Ships fight with arrows from range; if a ship sinks, the troops aboard are lost. Beware the divine wind off Japan (1274 and 1281).\n■ Razing towns  Select one of your towns (not the capital) and press Raze town to destroy it for spoils (food, wood, iron). Towns founded by other states yield more, but you lose the territory and population limit, and your neighbours grow wary. Steppe powers such as the Mongols sometimes raze the towns they take.\n\n■ Diplomacy  F2 opens Diplomacy. You must declare war before attacking. Capture a city and it becomes yours. A state that loses all its cities falls.\n■ Peace offers  When an enemy offers peace, answer Accept (Y) or Refuse (N). Time stops until you answer.\n■ Anti-X League  An alliance of the states bordering a country (sharing a border or with cities nearby), who attack it together for 15 years. In the age of rival powers it targets a state whose repeated wars and conquests push its neighbours' alarm to 100; in the Great Mongol State era it targets a state grown far stronger than the rest (for example, an Anti-Mongol League). States across the sea join only if they can build ships.\n■ Fallen states  When a state falls, its population allowance is shared among the survivors, the conqueror first. A state that submits (is annexed) passes its allowance to its overlord.\n■ Forts  With only workers selected, press Fort (R) to build one (food 300, wood 400, iron 300). It shoots enemy soldiers that come near (range 9). You may have 1 + cities ÷ 2 of them (6 at most).\n\n■ Historical events  In the right year heroes, generals and great rulers appear and strengthen their state, while revolts and usurpations cost soldiers and stores and change the ruling house. The Song begin as the richest state in the world, but in 1127 the Jingkang Incident gives the north to the Jin and leaves the Southern Song, who are later driven to the wall by the Mongols. The Mongols begin as a small tribal league, but grow mighty with the rise of Temüjin (1189), the submission of the Tatars, Keraits, Naimans and Merkits, and the enthronement of Genghis Khan (1206). Events of fallen states do not happen. See the records in the Annals (F3).\n■ Descent of Tengri  If Eurasia is not united by 1294, the Eternal Blue Sky (Tengri) descends upon the Mongols (they return at Karakorum even if destroyed). None can resist the army of Heaven; within 10 years Eurasia is united under the Mongols and the game ends.\n■ Heroic Spirits mode (chosen on the title screen, off by default)  Select workers and press Summon Spirit (H) to sacrifice them and summon the spirit of a real general or ruler of the Mongol age (Genghis Khan, Subutai, Yue Fei, Hōjō Tokimune, Minamoto no Yoshitsune, Saladin, Baybars, Alexander Nevsky...) across state lines. A spirit has 1.1–3.0 times the total power of the sacrifice. Each state may have one spirit at a time, and a spirit never appears for two states. Other states summon too. Only spirits can harm Heaven's soldiers, and cities near a spirit cannot be taken by Heaven's army. If your territory is larger than Heaven's Mongols 10 years after the Descent, you win.\n■ National traits  Each state has historical traits (see the title screen and the Annals). The Abbasid Caliphate cannot fall before 1258 (an attacker withdraws from its last city).\n■ Trade (F4)  Merchants who belong to no state travel the land and gather in states with high production. They pay tax (coin) just by passing through your land. Lighter taxes draw more merchants. Coin buys food, wood and iron at the market. Foreign merchants come only to the lands at the end of the Maritime Road (southern China), the India Road, the Mediterranean Road and the Amber Road (Baltic) and pay a lot of tax.\n■ Hill and steppe peoples  The Oirats, Kyrgyz, Turkmens, Nizaris, Bedouin, Lithuanians and others are not states. They raid weakly defended states or come to trade. Hire them as mercenaries with coin on the Trade screen; while hired they will not attack you.\n■ Time stops while commanding  Selecting your own units stops time; it resumes when you give an order or clear the selection.\n■ Fog of war  You see only around your own workers, soldiers and buildings. Land you have seen stays dimly visible. The capitals of all states are known from the start.\n\n■ Controls\n  Left click: select   Drag: box select   Double click: select all of a type (completed barracks on screen can train together)   Shift: add to selection\n  Right click: move / attack / gather (forest, mine, field) / help build / board (troops on a ship) / land (ship on land)   Right click with a building selected: rally point\n  A: attack-move   S: stop   T: train / educate   C: convert soldier ⇔ worker (ships: land troops)   Q/W/E...: build / train\n  Hold Ctrl while placing buildings: reserve builds (keep placing)\n  Ctrl+number: save group   Number: recall group   .: idle worker   Home: go to capital\n  Wheel: zoom   Middle drag / arrow keys / screen edge: scroll   Minimap click: jump\n  Space: pause   + / -: speed   Esc: close notice / cancel   F5: save / load   F11: fullscreen   Ctrl++ / Ctrl+−: text size",
-            "■ 目标　在1294年（忽必烈去世之年）之前统一欧亚。游戏始于1115年（金国建立）。时间对所有国家同样流逝（群雄割据时代1年＝24秒，1206年大蒙古国成立后时间放慢为1年＝48秒），各国享有相同的时代加成。\n\n■ 资源　粮（耕田）、木（伐木）、铁（采矿）。由民采集并运往都、邑。城邑也会缴纳少量税收。\n\n■ 单位　可指挥的数量有上限（随城邑数增加）。作为补偿，可通过“训练／教化”提升每个单位的能力（各时代有上限。费用优先从粮、木、铁中储量较多者支付）。军事单位只要存在就会消耗粮（维持费），粮尽则士兵逐渐衰弱。士兵可解散为民，民可征为步兵，但能力降为2/3。\n　相克关系：步兵（长枪）＞骑兵＞弓兵＞步兵。骑射兵（蒙古骑射兵、日本骑马武士、马穆鲁克等）虽是骑兵却能远程射击。\n■ 各国兵种　各国可训练的兵种不同（蒙古怯薛、宋的火枪兵与神臂弓兵、金的铁浮屠、西夏的泼喜、日本武士与骑马武士、埃及马穆鲁克、拜占庭瓦兰吉卫队、波兰与匈牙利骑士等）。将鼠标移到兵营按钮上即可查看强弱。\n■ 臣属　攻下并占有他国所筑的城邑，该国即成为臣属，其兵种也可在兵营训练（名称带＊）。占有高丽、宋、南宋、日本的城邑后，也能造船。\n■ 船与海　渡海需要船。只有日本、高丽、宋、南宋能造船（或占有其城邑的国家）。用民在海边建“港口”，在港口造船。只要命令士兵向海对面移动或进攻，士兵就会在最近的岸边等候，空闲的船只会自动往返运送（每船6人）。即使陆路相通，若绕海路快得多也会乘船。若要手动装载，选中士兵后右键点击船即可登船（同时选中多名士兵与多艘船后右键点击船，或按“全部登船”，士兵会分别登上有空位的船）。选中船后右键点击陆地，船会驶往附近岸边并让士兵登陆（按“登陆”可在当前岸边卸下）。船以弓箭远程作战，沉没时船上士兵一并损失。在日本近海要当心神风（1274年、1281年）。\n■ 焚毁城邑　选中己方的邑（都城除外）后可按“焚毁此邑”将其摧毁并获得战利品（粮、木、铁）。他国所筑之邑所得更多，但会失去领土与人口上限，周边各国的警戒也会上升。蒙古等游牧国家有时会焚毁攻下的城邑。\n\n■ 外交　按 F2 打开外交画面。不宣战就不能攻击他国。攻下城邑即归我方所有。失去全部城邑的国家灭亡。\n■ 议和请求　交战国提出议和时，以“接受（Y）”或“拒绝（N）”回应。回应之前时间停止。\n■ 反〇〇同盟　由与某国接壤（领土相接或城邑相近）的国家结成的同盟，在15年内共同进攻。群雄割据时代，频繁宣战或攻城使“邻国警戒”达到100的国家会成为目标；大蒙古国时代，一枝独秀的强国会成为目标（例如反蒙古同盟）。隔海的国家只有能造船时才会加入。\n■ 灭亡与人口上限　国家灭亡时，其民与兵的上限会分给存活的国家，攻灭者优先。臣服（被兼并）的国家的上限由宗主国继承。\n■ 要塞　只选中民时，可用“要塞（R）”修筑（粮300・木400・铁300）。射击靠近的敌兵（射程9）。数量上限为“1＋城邑数÷2”（最多6）。\n\n■ 史实事件　到了史实年份，英雄、名将、明君会出现并增强国力；叛乱与篡位则会损失士兵与储备，君主家随之更替。宋起初是世界最富强的国家，但1127年靖康之变后北方被金夺取，成为南宋，后来又被蒙古逼入绝境。蒙古起初只是小部落联盟，但随着铁木真崛起（1189年）、塔塔儿・克烈・乃蛮・蔑儿乞的臣服以及成吉思汗即位（1206年）而强大起来。若该国已灭亡则不会发生。记录可在“史记”（F3）查看。\n■ 腾格里降临　若未能在1294年之前统一欧亚，长生天（腾格里）将降临于蒙古（即使蒙古已灭亡也会在哈拉和林复活）。天之军不可抗拒，10年之内欧亚将归于蒙古，游戏结束。\n■ 英灵模式（在标题画面选择，默认关闭）　选中民后按“召唤英灵”（H），即可献祭所选的民，跨越国界召唤蒙古帝国时代各国真实将领与帝王（成吉思汗、速不台、岳飞、北条时宗、源义经、萨拉丁、拜巴尔斯、亚历山大・涅夫斯基等）的英灵。英灵能力为祭品能力总和的1.1〜3.0倍。每国同时只能拥有一位英灵，同一英灵不会出现在两国。他国也会召唤。只有英灵能伤及天之兵，英灵附近的城邑也不会被天之军夺走。降临10年后，若我国版图大于天之蒙古即获胜。\n■ 国家特点　各国拥有基于史实的特点（可在标题画面与史记中查看）。阿拔斯朝在1258年之前不会灭亡（即使最后的城邑被攻破，攻方也会撤兵）。\n■ 贸易（F4）　不属于任何国家的商人周游列国，生产力越高的国家聚集越多。商人只要途经领内就会缴税（钱）。税率越轻，商人越多。钱可在市场换成粮、木、铁。远方商人只会来到海上之路（江南・华南）、印度之路、地中海之路、琥珀之路（波罗的海）尽头的地区，并缴纳大量税收。\n■ 山地与游牧民　卫拉特、吉尔吉斯、土库曼、尼扎里派、贝都因、立陶宛等不是国家。他们或来劫掠防守薄弱的国家，或来贸易。可在贸易画面用钱雇其为佣兵，受雇期间不会袭击雇主。\n■ 指挥中时间停止　选中己方单位时时间停止，下达命令（或取消选择）后继续。\n■ 战争迷雾　只能看到己方民、兵、建筑周围。看过的土地会暗淡地保留。各国都城的位置从一开始就已知。\n\n■ 操作\n　左键：选择　拖动：框选　双击：选择全部同类（可选中屏幕内已完工的兵营并批量生产）　Shift：追加选择\n　右键：移动／攻击／采集（森林・矿山・田）／协助建造／登船（士兵点船）／登陆（船点陆地）　选中建筑时右键：集结点\n　A：进军（攻击移动）　S：停止　T：训练・教化　C：兵⇔民转换（船：登陆）　Q/W/E…：建造・训练\n　按住 Ctrl 放置建筑：预约建造（可连续放置）\n　Ctrl+数字：编队　数字：调出编队　.：闲置的民　Home：回国都\n　滚轮：缩放　中键拖动・方向键・画面边缘：滚动　点击小地图：移动\n　Space：暂停　＋／－：速度　Esc：关闭公告・取消　F5：存档（保存・读取）　F11：全屏　Ctrl＋＋／Ctrl＋−：文字大小"
+            "■ 目的　1294年（クビライの死の年）までにユーラシアを統一せよ。始まりは1115年（金の建国）。時間は全ての国で共通に流れ（群雄割拠の時代は1年＝24秒、1206年の大モンゴル国の成立からは時間がゆっくり流れ1年＝48秒）、どの国も同じ時代補正を受ける。\n\n■ 資源　糧（田を耕す）・木（森を伐採）・鉄（鉱山を採掘）。民が集めて都・邑へ運ぶ。城邑からも少しずつ税収がある。\n\n■ ユニット　動かせる数には上限がある（城邑の数で増える）。その代わり「訓練／教化」で一体ごとの能力を高められる（時代ごとに上限あり。費用は糧・木・鉄のうち蓄えの多いものから優先して払う）。軍事ユニットは存在するだけで糧を消費する（維持費）。糧が尽きると兵は弱っていく。兵を解散して民に、民を徴兵して歩兵にできるが、能力は2/3に目減りする。\n　歩兵（槍）＞騎兵＞弓兵＞歩兵 の相性がある。騎射兵（モンゴルの騎射兵・日本の騎馬武者・マムルークなど）は騎兵でありながら遠くから射る。\n■ 国ごとの兵種　作れる兵は国によって違う（モンゴルのケシク、宋の火槍兵・神臂弓兵、金の鉄浮屠、西夏の潑喜、日本の武士・騎馬武者、エジプトのマムルーク、ビザンツのヴァリャーグ親衛隊、ポーランド・ハンガリーの騎士など）。兵営のボタンにマウスを重ねると強さが分かる。\n■ 服属　他国が築いた城邑を攻め落として領すると、その国が服属したことになり、その国の兵も兵営で作れる（ボタンの名前に＊が付く）。高麗・宋・南宋・日本の城邑を領すれば、船も造れる。\n■ 船と海　海を渡るには船が要る。船を造れるのは日本・高麗・宋・南宋だけ（またはそれらの城邑を服属させた国）。民で「港」を海辺に建て、港で船を造る。海の向こうへ移動・攻撃を命じるだけで、兵は近くの岸で待ち、手の空いた船が自動で往復して運ぶ（1隻に6人）。陸続きでも、海を回ったほうがずっと早ければ船を使う。自分で乗せるときは、兵を選んで船を右クリックすると乗り込む（兵と船をいくつか一緒に選んで船を右クリックするか「まとめて乗船」を押すと、空きのある船に分かれて乗る）。船を選んで陸を右クリックすると、その近くの岸へ向かって兵を降ろす（「上陸」ボタンでいまの岸に降ろす）。船は遠くから矢を射て戦い、沈むと乗っていた兵も失われる。日本の近海では神風（1274年・1281年）に注意。\n■ 邑の破壊　自国の邑（都以外）を選ぶと「邑を焼き払う」で破壊でき、戦利品（糧・木・鉄）を得る。他国が築いた邑ほど多く得られるが、領土と人口上限は減り、周りの国の警戒も高まる。モンゴルなどの遊牧国家は、攻め落とした邑を焼き払うことがある。\n\n■ 外交　F2で外交画面。宣戦しないと他国を攻撃できない。城邑を攻め落とすと自国のものになる。全ての城邑を失った国は滅亡する。\n■ 和睦の申し入れ　交戦国からの和睦の申し入れには「受諾（Y）」か「拒否（N）」で答える。答えるまで時間は止まる。\n■ 反〇〇同盟　国境を接する国（領土が接するか、城邑が近い国）が結ぶ同盟で、15年間ともに攻めてくる。群雄割拠の時代は、宣戦や攻略を繰り返して「隣国の警戒」が100に達した国が狙われる。大モンゴル国の時代は、突出して強くなった国が狙われる（たとえば反モンゴル同盟）。海の向こうの国は、船を造れる場合だけ加わる。\n■ 滅亡と人口上限　国が滅ぶと、その国の民・兵の上限が生き残った国に分けられる（攻め滅ぼした国が優先）。服属（併合）した国の上限はそのまま引き継ぐ。\n■ 要塞　民だけを選ぶと「要塞（R）」で築ける（糧300・木400・鉄300）。近づく敵兵を射る（射程9）。数は「1＋城邑の数÷2」まで（最大6）。\n\n■ 史実の出来事　史実の年になると、英雄・名将・名君が現れて国を強くし、反乱や簒奪で兵や蓄えを失い君主家が変わる。宋は初めは世界一の富強国だが、1127年の靖康の変で北を金に奪われて南宋となり、やがてモンゴルに追い詰められる。モンゴルは初めは小さな部族連合だが、テムジンの登場（1189年）、タタル・ケレイト・ナイマン・メルキトの服属、チンギス・カンの即位（1206年）で強大になる。その国が滅んでいれば起こらない。記録は「史記」（F3）で見られる。\n■ テングリの降臨　1294年までにユーラシアを統一できなければ、永遠の蒼き天（テングリ）がモンゴルに降臨する（モンゴルが滅んでいてもカラコルムに蘇る）。天の軍には抗えず、10年のうちにユーラシアはモンゴルに統一され、ゲームは終わる。\n■ 英霊モード（タイトル画面で選ぶ。既定はオフ）　民を選んで「英霊召喚」（H）を押すと、選んだ民を生贄に捧げて、モンゴル帝国の時代に各国に実在した将軍・帝王（チンギス・カン、スブタイ、岳飛、北条時宗、源義経、サラディン、バイバルス、アレクサンドル・ネフスキーなど）の英霊を国を超えて呼べる。英霊の能力は生贄の能力の合計の1.1〜3.0倍。一国が同時に従えられる英霊は一体だけで、同じ英霊は二国に現れない。他国も召喚する。英霊だけが天の兵を傷つけられ、英霊の近くの城邑は天の軍にも奪われない。降臨から10年後、自国の版図が天のモンゴルより広ければ勝利。\n■ 国の特徴　国ごとに史実に基づく特徴がある（タイトル画面と史記で確認できる）。アッバース朝は1258年までは滅びない（最後の城邑を落とされても攻め手は兵を引く）。\n■ 交易（F4）　国に属さない商人が諸国を巡り、生産力の高い国ほど多く集まる。商人は領内を通るだけで税（銭）を納める。税率は軽いほど商人が集まる。銭は市場で糧・木・鉄に換えられる。遠方の商人は海の道（江南・華南）・インドの道・地中海の道・琥珀の道（バルト）の先の地域にだけ来て、多くの税を落とす。\n■ 山岳民・遊牧民　オイラト・キルギス・トルクメン・ニザール派・ベドウィン・リトアニアなどは国ではない。守りの薄い国へ略奪に来たり、商いに来たりする。交易画面から銭で傭兵に雇え、雇った部族はその間その国を襲わない。\n■ 指揮中は時が止まる　自国の部隊を選ぶと時間が止まり、命令を出すと（または選択を解くと）再び進む。\n■ 戦場の霧　自国の民・兵・建物の周囲しか見えない。一度見た土地は暗く残る。諸国の都の所在だけは初めから分かっている。\n\n■ 操作\n軍事ユニットを2体以上選択し、「軍団」（J）から編成。軍団番号で呼び出し、Aで進軍先を指定、Dで領内の迎撃・防衛集結を命じる。\n　左クリック：選択　ドラッグ：範囲選択　ダブルクリック：同種を全選択（完成済みの兵営も画面内で一括選択・生産）　Shift：追加選択\n　右クリック：移動／攻撃／採集（森・鉱山・田）／建設の手伝い／乗船（兵で船を）／上陸（船で陸を）　建物選択中の右クリック：集合地点\n　A：進軍（攻撃移動）　S：停止　T：訓練・教化　C：兵⇔民の転換（船は上陸）　Q/W/E…：建設・訓練\n　Ctrl を押しながら建物を置く：建設の予約（続けて置ける）\n　Ctrl+数字：部隊登録　数字：部隊呼び出し　.：待機中の民　Home：国都へ\n　ホイール：拡大縮小　中ボタンドラッグ・矢印キー・画面端：スクロール　ミニマップクリック：移動\n　Space：一時停止　＋／－：速度　Esc：告知を閉じる・取り消し　F5：記録（セーブ・ロード）　F11：全画面　Ctrl＋＋／Ctrl＋−：文字の大きさ",
+            "■ Goal  Unify Eurasia by 1294, the year Kublai dies. The game begins in 1115 with the founding of the Jin. Time flows the same for every state (in the age of rival powers 1 year = 24 s; from the founding of the Great Mongol State in 1206 time slows to 1 year = 48 s), and every state gets the same era bonus.\n\n■ Resources  Food (farm fields), wood (cut forests), iron (mine). Workers carry them to the capital or a town. Cities also pay a little tax.\n\n■ Units  The number you can field is limited (more cities raise it). Instead, Train / Educate raises each unit's power (capped per era; the cost is paid mostly from whichever of food, wood and iron you have most of). Soldiers eat food just by existing (upkeep); without food they weaken. Soldiers can be disbanded into workers and workers drafted as infantry, but power drops to 2/3.\n  Counters: infantry (spears) > cavalry > archers > infantry. Horse archers (Mongol horse archers, Japanese mounted samurai, Mamluks...) are cavalry that shoot from range.\n■ National units  Each state fields different troops (the Mongol Keshig, Song fire lances and divine-arm crossbows, Jin iron pagoda cavalry, the Xia camel catapults, Japanese samurai, Egyptian Mamluks, the Byzantine Varangian Guard, Polish and Hungarian knights...). Hover over a barracks button to see a unit's strength.\n■ Subject states  Take and hold a city founded by another state and that state becomes your subject: its units can be trained at your barracks too (marked with *). Hold a city of Goryeo, Song, the Southern Song or Japan and you can build ships as well.\n■ Ships and the sea  Crossing the sea needs ships, and only Japan, Goryeo, Song and the Southern Song can build them (or states holding one of their cities). Build a Harbor on the coast with workers and build ships there. Just order troops to move or attack across the sea: they wait on the nearest shore and free ships automatically ferry them back and forth (6 per ship). Even over land, they take ships when going round by sea is much faster. To load them yourself, select troops and right-click a ship (select several troops and ships together and right-click a ship, or press Board all, to spread them over the ships with room). Select a ship and right-click land to sail to the nearest shore and land the troops (or press Land troops to land them where you are). Ships fight with arrows from range; if a ship sinks, the troops aboard are lost. Beware the divine wind off Japan (1274 and 1281).\n■ Razing towns  Select one of your towns (not the capital) and press Raze town to destroy it for spoils (food, wood, iron). Towns founded by other states yield more, but you lose the territory and population limit, and your neighbours grow wary. Steppe powers such as the Mongols sometimes raze the towns they take.\n\n■ Diplomacy  F2 opens Diplomacy. You must declare war before attacking. Capture a city and it becomes yours. A state that loses all its cities falls.\n■ Peace offers  When an enemy offers peace, answer Accept (Y) or Refuse (N). Time stops until you answer.\n■ Anti-X League  An alliance of the states bordering a country (sharing a border or with cities nearby), who attack it together for 15 years. In the age of rival powers it targets a state whose repeated wars and conquests push its neighbours' alarm to 100; in the Great Mongol State era it targets a state grown far stronger than the rest (for example, an Anti-Mongol League). States across the sea join only if they can build ships.\n■ Fallen states  When a state falls, its population allowance is shared among the survivors, the conqueror first. A state that submits (is annexed) passes its allowance to its overlord.\n■ Forts  With only workers selected, press Fort (R) to build one (food 300, wood 400, iron 300). It shoots enemy soldiers that come near (range 9). You may have 1 + cities ÷ 2 of them (6 at most).\n\n■ Historical events  In the right year heroes, generals and great rulers appear and strengthen their state, while revolts and usurpations cost soldiers and stores and change the ruling house. The Song begin as the richest state in the world, but in 1127 the Jingkang Incident gives the north to the Jin and leaves the Southern Song, who are later driven to the wall by the Mongols. The Mongols begin as a small tribal league, but grow mighty with the rise of Temüjin (1189), the submission of the Tatars, Keraits, Naimans and Merkits, and the enthronement of Genghis Khan (1206). Events of fallen states do not happen. See the records in the Annals (F3).\n■ Descent of Tengri  If Eurasia is not united by 1294, the Eternal Blue Sky (Tengri) descends upon the Mongols (they return at Karakorum even if destroyed). None can resist the army of Heaven; within 10 years Eurasia is united under the Mongols and the game ends.\n■ Heroic Spirits mode (chosen on the title screen, off by default)  Select workers and press Summon Spirit (H) to sacrifice them and summon the spirit of a real general or ruler of the Mongol age (Genghis Khan, Subutai, Yue Fei, Hōjō Tokimune, Minamoto no Yoshitsune, Saladin, Baybars, Alexander Nevsky...) across state lines. A spirit has 1.1–3.0 times the total power of the sacrifice. Each state may have one spirit at a time, and a spirit never appears for two states. Other states summon too. Only spirits can harm Heaven's soldiers, and cities near a spirit cannot be taken by Heaven's army. If your territory is larger than Heaven's Mongols 10 years after the Descent, you win.\n■ National traits  Each state has historical traits (see the title screen and the Annals). The Abbasid Caliphate cannot fall before 1258 (an attacker withdraws from its last city).\n■ Trade (F4)  Merchants who belong to no state travel the land and gather in states with high production. They pay tax (coin) just by passing through your land. Lighter taxes draw more merchants. Coin buys food, wood and iron at the market. Foreign merchants come only to the lands at the end of the Maritime Road (southern China), the India Road, the Mediterranean Road and the Amber Road (Baltic) and pay a lot of tax.\n■ Hill and steppe peoples  The Oirats, Kyrgyz, Turkmens, Nizaris, Bedouin, Lithuanians and others are not states. They raid weakly defended states or come to trade. Hire them as mercenaries with coin on the Trade screen; while hired they will not attack you.\n■ Time stops while commanding  Selecting your own units stops time; it resumes when you give an order or clear the selection.\n■ Fog of war  You see only around your own workers, soldiers and buildings. Land you have seen stays dimly visible. The capitals of all states are known from the start.\n\n■ Controls\nSelect at least two military units and open Corps (J) to form a corps. Recall it by its button, then press A and pick an advance destination, or press D to intercept intruders or rally for defense.\n  Left click: select   Drag: box select   Double click: select all of a type (completed barracks on screen can train together)   Shift: add to selection\n  Right click: move / attack / gather (forest, mine, field) / help build / board (troops on a ship) / land (ship on land)   Right click with a building selected: rally point\n  A: attack-move   S: stop   T: train / educate   C: convert soldier ⇔ worker (ships: land troops)   Q/W/E...: build / train\n  Hold Ctrl while placing buildings: reserve builds (keep placing)\n  Ctrl+number: save group   Number: recall group   .: idle worker   Home: go to capital\n  Wheel: zoom   Middle drag / arrow keys / screen edge: scroll   Minimap click: jump\n  Space: pause   + / -: speed   Esc: close notice / cancel   F5: save / load   F11: fullscreen   Ctrl++ / Ctrl+−: text size",
+            "■ 目标　在1294年（忽必烈去世之年）之前统一欧亚。游戏始于1115年（金国建立）。时间对所有国家同样流逝（群雄割据时代1年＝24秒，1206年大蒙古国成立后时间放慢为1年＝48秒），各国享有相同的时代加成。\n\n■ 资源　粮（耕田）、木（伐木）、铁（采矿）。由民采集并运往都、邑。城邑也会缴纳少量税收。\n\n■ 单位　可指挥的数量有上限（随城邑数增加）。作为补偿，可通过“训练／教化”提升每个单位的能力（各时代有上限。费用优先从粮、木、铁中储量较多者支付）。军事单位只要存在就会消耗粮（维持费），粮尽则士兵逐渐衰弱。士兵可解散为民，民可征为步兵，但能力降为2/3。\n　相克关系：步兵（长枪）＞骑兵＞弓兵＞步兵。骑射兵（蒙古骑射兵、日本骑马武士、马穆鲁克等）虽是骑兵却能远程射击。\n■ 各国兵种　各国可训练的兵种不同（蒙古怯薛、宋的火枪兵与神臂弓兵、金的铁浮屠、西夏的泼喜、日本武士与骑马武士、埃及马穆鲁克、拜占庭瓦兰吉卫队、波兰与匈牙利骑士等）。将鼠标移到兵营按钮上即可查看强弱。\n■ 臣属　攻下并占有他国所筑的城邑，该国即成为臣属，其兵种也可在兵营训练（名称带＊）。占有高丽、宋、南宋、日本的城邑后，也能造船。\n■ 船与海　渡海需要船。只有日本、高丽、宋、南宋能造船（或占有其城邑的国家）。用民在海边建“港口”，在港口造船。只要命令士兵向海对面移动或进攻，士兵就会在最近的岸边等候，空闲的船只会自动往返运送（每船6人）。即使陆路相通，若绕海路快得多也会乘船。若要手动装载，选中士兵后右键点击船即可登船（同时选中多名士兵与多艘船后右键点击船，或按“全部登船”，士兵会分别登上有空位的船）。选中船后右键点击陆地，船会驶往附近岸边并让士兵登陆（按“登陆”可在当前岸边卸下）。船以弓箭远程作战，沉没时船上士兵一并损失。在日本近海要当心神风（1274年、1281年）。\n■ 焚毁城邑　选中己方的邑（都城除外）后可按“焚毁此邑”将其摧毁并获得战利品（粮、木、铁）。他国所筑之邑所得更多，但会失去领土与人口上限，周边各国的警戒也会上升。蒙古等游牧国家有时会焚毁攻下的城邑。\n\n■ 外交　按 F2 打开外交画面。不宣战就不能攻击他国。攻下城邑即归我方所有。失去全部城邑的国家灭亡。\n■ 议和请求　交战国提出议和时，以“接受（Y）”或“拒绝（N）”回应。回应之前时间停止。\n■ 反〇〇同盟　由与某国接壤（领土相接或城邑相近）的国家结成的同盟，在15年内共同进攻。群雄割据时代，频繁宣战或攻城使“邻国警戒”达到100的国家会成为目标；大蒙古国时代，一枝独秀的强国会成为目标（例如反蒙古同盟）。隔海的国家只有能造船时才会加入。\n■ 灭亡与人口上限　国家灭亡时，其民与兵的上限会分给存活的国家，攻灭者优先。臣服（被兼并）的国家的上限由宗主国继承。\n■ 要塞　只选中民时，可用“要塞（R）”修筑（粮300・木400・铁300）。射击靠近的敌兵（射程9）。数量上限为“1＋城邑数÷2”（最多6）。\n\n■ 史实事件　到了史实年份，英雄、名将、明君会出现并增强国力；叛乱与篡位则会损失士兵与储备，君主家随之更替。宋起初是世界最富强的国家，但1127年靖康之变后北方被金夺取，成为南宋，后来又被蒙古逼入绝境。蒙古起初只是小部落联盟，但随着铁木真崛起（1189年）、塔塔儿・克烈・乃蛮・蔑儿乞的臣服以及成吉思汗即位（1206年）而强大起来。若该国已灭亡则不会发生。记录可在“史记”（F3）查看。\n■ 腾格里降临　若未能在1294年之前统一欧亚，长生天（腾格里）将降临于蒙古（即使蒙古已灭亡也会在哈拉和林复活）。天之军不可抗拒，10年之内欧亚将归于蒙古，游戏结束。\n■ 英灵模式（在标题画面选择，默认关闭）　选中民后按“召唤英灵”（H），即可献祭所选的民，跨越国界召唤蒙古帝国时代各国真实将领与帝王（成吉思汗、速不台、岳飞、北条时宗、源义经、萨拉丁、拜巴尔斯、亚历山大・涅夫斯基等）的英灵。英灵能力为祭品能力总和的1.1〜3.0倍。每国同时只能拥有一位英灵，同一英灵不会出现在两国。他国也会召唤。只有英灵能伤及天之兵，英灵附近的城邑也不会被天之军夺走。降临10年后，若我国版图大于天之蒙古即获胜。\n■ 国家特点　各国拥有基于史实的特点（可在标题画面与史记中查看）。阿拔斯朝在1258年之前不会灭亡（即使最后的城邑被攻破，攻方也会撤兵）。\n■ 贸易（F4）　不属于任何国家的商人周游列国，生产力越高的国家聚集越多。商人只要途经领内就会缴税（钱）。税率越轻，商人越多。钱可在市场换成粮、木、铁。远方商人只会来到海上之路（江南・华南）、印度之路、地中海之路、琥珀之路（波罗的海）尽头的地区，并缴纳大量税收。\n■ 山地与游牧民　卫拉特、吉尔吉斯、土库曼、尼扎里派、贝都因、立陶宛等不是国家。他们或来劫掠防守薄弱的国家，或来贸易。可在贸易画面用钱雇其为佣兵，受雇期间不会袭击雇主。\n■ 指挥中时间停止　选中己方单位时时间停止，下达命令（或取消选择）后继续。\n■ 战争迷雾　只能看到己方民、兵、建筑周围。看过的土地会暗淡地保留。各国都城的位置从一开始就已知。\n\n■ 操作\n选中至少两个己方军事单位，从“军团”（J）组建。点击军团编号召回，按 A 指定进军目标，按 D 迎击入侵者或集结防守。\n　左键：选择　拖动：框选　双击：选择全部同类（可选中屏幕内已完工的兵营并批量生产）　Shift：追加选择\n　右键：移动／攻击／采集（森林・矿山・田）／协助建造／登船（士兵点船）／登陆（船点陆地）　选中建筑时右键：集结点\n　A：进军（攻击移动）　S：停止　T：训练・教化　C：兵⇔民转换（船：登陆）　Q/W/E…：建造・训练\n　按住 Ctrl 放置建筑：预约建造（可连续放置）\n　Ctrl+数字：编队　数字：调出编队　.：闲置的民　Home：回国都\n　滚轮：缩放　中键拖动・方向键・画面边缘：滚动　点击小地图：移动\n　Space：暂停　＋／－：速度　Esc：关闭公告・取消　F5：存档（保存・读取）　F11：全屏　Ctrl＋＋／Ctrl＋−：文字大小"
         );
         // 入りきらなければ小さい字にする
         let f = if self.gfx.measure_h(text, Font::Normal, pw - 48.0) > ph - 64.0 { Font::Small } else { Font::Normal };
